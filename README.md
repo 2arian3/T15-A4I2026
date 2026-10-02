@@ -548,7 +548,7 @@ own. Review before you accept.
 
 [Docs](https://antigravity.google/docs/cli)
 ·
-[Hands-on codelab](https://codelabs.developers.google.com/antigravity-cli-getting-started)
+[Hands-on codelab](https://codelabs.developers.google.com/antigravity-cli-hands-on)
 
 ### Step 4—Load the data
 
@@ -1031,7 +1031,7 @@ whether you made the choice on purpose and can say why.
 **The rest of the stack**
 [MCP Toolbox for Databases](https://github.com/googleapis/mcp-toolbox)—named, parameterised tools
 ·
-[BigQuery MCP server](https://cloud.google.com/bigquery/docs/pre-built-tools-with-mcp)
+[BigQuery MCP server](https://docs.cloud.google.com/bigquery/docs/use-bigquery-mcp)
 ·
 [BigQuery geospatial functions](https://cloud.google.com/bigquery/docs/reference/standard-sql/geography_functions)—`ST_DISTANCE`, `ST_GEOGPOINT`
 ·
