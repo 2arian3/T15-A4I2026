@@ -365,7 +365,7 @@ Everything lands in one repo, not eight forks.
 **Everyone else: create a free [GitHub](https://github.com) account now** if you don't have one,
 and **send your username to the repo owner** while they're setting up.
 
-**Agree your county, your track and your scenario** (see above). Five minutes. Write it where
+**Agree your county, your track, and your scenario** (see above). Five minutes. Write it where
 everyone can see it.
 
 **Then spend ten more on [What will set yours apart](#what-will-set-yours-apart).** It sits near the
