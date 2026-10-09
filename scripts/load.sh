@@ -318,7 +318,7 @@ elif [[ "${hpsa}" == "0" ]]; then
   info "  NOTE: zero designated shortage AREAS. That is a real finding, not a broken load -"
   info "  Fulton's 99 designations are ALL 'Proposed For Withdrawal', and Harris, Travis and"
   info "  Santa Clara have none at all. shortage_areas is empty on purpose. You have lost"
-  info "  HPSA_SCORE as a neighbourhood signal, which was our only travel-burden measure."
+  info "  HPSA_SCORE as a neighborhood signal, which was our only travel-burden measure."
   info "  Do not confuse this with shortage_facilities, which marks where care already IS."
 fi
 
@@ -349,8 +349,8 @@ echo "  Safe to re-run at any time - each load replaces the whole table."
 echo
 echo "  THE ONE THING THAT WILL COST YOU CREDIT IF YOU MISS IT: these tables are at"
 echo "  four different resolutions and they do not say so. burden_tracts is a census"
-echo "  tract. exposure_tracts carries an eleven-digit tract ID over a 12 km modelling"
-echo "  grid, so it cannot tell one neighbourhood from another. care_sites is a point."
+echo "  tract. exposure_tracts carries an eleven-digit tract ID over a 12 km modeling"
+echo "  grid, so it cannot tell one neighborhood from another. care_sites is a point."
 echo "  disease_weekly is a multi-county Health Service Area written onto a county key."
 echo "  An agent that blends all four into one confident sentence has said something"
 echo "  the data cannot support. Saying which scale each claim came from is the job."

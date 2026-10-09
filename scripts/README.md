@@ -12,7 +12,7 @@ minutes, it explains what it's doing and why, and the explanations matter. Use t
 From the **root of the repo**, in Cloud Shell:
 
 ```bash
-bash scripts/load.sh              # loads Fulton County, GA — the default
+bash scripts/load.sh              # loads Fulton County, GA—the default
 bash scripts/load.sh 17031        # Cook County, IL
 bash scripts/load.sh --list       # show every county we've published
 bash scripts/load.sh --help       # usage

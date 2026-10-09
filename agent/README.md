@@ -6,7 +6,7 @@ We built the on-ramp: every federally recognized care site in your county with c
 census tracts around them with disease burden, insurance, vehicle access and mobility, the federal
 shortage designations with the withdrawal trap already filtered out, the air at the only scale it
 works, the current respiratory signal with its real resolution stated, both distances computed for
-every tract, the licences checked, and a validation suite that tells you plainly whether any of it
+every tract, the licenses checked, and a validation suite that tells you plainly whether any of it
 is wrong. We did not build the vehicle. The design decisions in your agent are what you are judged
 on.
 
