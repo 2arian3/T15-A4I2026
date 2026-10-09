@@ -39,7 +39,7 @@ what each of you needs in the first fifteen minutes.
 
 | If you are… | Read now | Come back for |
 |---|---|---|
-| **Everyone, together** | [The five things](#the-five-things-youre-working-with) · [Three tracks](#three-tracks-one-architecture) · [What you're building](#what-youre-building) · [Pick your county](#now-pick-your-county) | — |
+| **Everyone, together** | [The five things](#the-five-things-youre-working-with) · [Three tracks](#three-tracks-one-architecture) · [What you're building](#what-youre-building) · [Pick your county](#now-pick-your-county) | — decide these before anyone opens a keyboard |
 | **Team lead** | [Step 0](#step-0organize-your-team) · [How you'll be judged](#how-youll-be-judged) | [What will set yours apart](#what-will-set-yours-apart)—read it *before* you write code, not before you demo |
 | **Data lane** | [Step 4, load the data](#step-4load-the-data) · [What you'll have](#what-youll-have) | [The data, and why we chose it](#the-data-and-why-we-chose-it) · Section 12 of the notebook |
 | **Agent lane** | [The technology](#the-technology-youll-use)—**all of it, now.** Your differentiator is an architecture and you cannot bolt it on at the end | [`agent/README.md`](agent/README.md) · Section 13 of the notebook · [Reference](#reference) |
@@ -82,13 +82,15 @@ The whole challenge is: **one county, one van, four Saturdays, and a reason you 
 Three people could ask for this system and mean three different things. Pick the one whose story you
 want to tell on stage.
 
+**These are suggestions, not a menu you are confined to.** Pick one, combine two, or invent your
+own—if you can see a public-health-equity problem in the same vein that these three miss, that is
+exactly the kind of judgment this challenge rewards. Just be ready to say why yours is worth solving.
+
 | Track | The situation | Who your user is | What makes it hard |
 |---|---|---|---|
 | 🚐 **Siting** | Next month's calendar is empty and four Saturdays need filling | An outreach lead at the county health department | Every ranking you can build is defensible. Choosing *between* them, out loud, is the job |
 | 📋 **Accountability** | A funder wants to know the money went where the need was, not where the parking was easy | A program director writing a grant report | Your best evidence is a demographic audit of a plan you were forbidden to build on demographics |
 | 📣 **Explanation** | The van is coming to one neighborhood and not the one next door, and somebody has to say why | A community health worker who lives there | Everything above is written for a professional. This has to be readable, in more than one language, by somebody who is not |
-
-**These are suggestions, not a menu you are confined to.** Pick one, combine two, or invent your own.
 
 ### The tracks are the architecture, and that is not a coincidence
 
