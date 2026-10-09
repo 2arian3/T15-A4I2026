@@ -259,9 +259,11 @@ against a specific situation than a general one, and it is the sentence your dem
 | **At least one tool you built yourself** | A Python function tool or one defined in MCP Toolbox |
 | **Deployment** | Agent Runtime or Cloud Run, your choice |
 
-**The Antigravity CLI (`agy`) is already installed in Cloud Shell.** Not required, and nothing here
-depends on it, but it is a genuinely capable terminal coding agent and Google would like you to try
-it.
+**Also already set up for you, and worth ten seconds now rather than later: Antigravity.** Your
+Google Skills lab environment has a button that launches the **Antigravity IDE**, and the
+**Antigravity CLI** is one word away in Cloud Shell—type `agy`. Not required, and nothing here
+depends on either, but we strongly recommend you use one: every lane has tedious work a coding
+agent will happily absorb. [Details in Step 3](#strongly-recommended-antigravity-the-ide-and-the-cli).
 
 ### Choosing your MCP server
 
@@ -502,6 +504,7 @@ You have Owner. You don't need to create a project, set up billing, or download 
 
 **Cloud Shell is where you'll work.** It has `gcloud`, `bq`, Python, Node, git, Docker, and the
 Antigravity CLI already installed. Nothing to set up on your laptop, no admin rights needed.
+(The Antigravity IDE launches from a button in your Skills lab environment; see below.)
 
 1. In the Cloud console, click the **`>_`** terminal icon, top right.
 2. `git clone <your team repo URL>`
@@ -531,13 +534,20 @@ of building:
 git checkout -b agent      # or data, frontend, story
 ```
 
-#### Optional but encouraged: the Antigravity CLI
+#### Strongly recommended: Antigravity, the IDE and the CLI
 
-**`agy` is already installed in Cloud Shell.** You run zero setup commands—just type it.
+Antigravity is Google's agentic coding environment, and **it is already set up for you in two
+forms**. Neither is a requirement, and nothing in this challenge depends on either—so don't lose
+time fighting one if it isn't helping. But we strongly recommend you use at least one, because every
+lane has tedious work it will happily absorb, and the fastest teams at events like this are the ones
+that let a coding agent do the typing while they do the thinking.
 
-Google would like you to try it. It is **not a requirement**, and nothing in this challenge depends
-on it. But it's a genuinely capable terminal coding agent: it reads your codebase, proposes edits
-with your permission, and runs commands for you.
+**The Antigravity IDE.** Your Google Skills lab environment includes a button that launches it. A
+full editor with an agent in it: it reads your repo, proposes edits you review before accepting,
+runs code in the terminal, and can drive a browser. If you'd normally open an editor, open this one.
+
+**The Antigravity CLI (`agy`).** Already installed in Cloud Shell. You run zero setup commands—just
+type it:
 
 ```bash
 agy
@@ -546,9 +556,13 @@ agy
 `/diff` shows pending changes before you accept them, `/permissions` controls what it can do on its
 own. Review before you accept.
 
-[Docs](https://antigravity.google/docs/cli)
+[Antigravity: getting started](https://antigravity.google/docs/getting-started)
 ·
-[Hands-on codelab](https://codelabs.developers.google.com/antigravity-cli-hands-on)
+[IDE overview](https://antigravity.google/docs/ide/overview/)
+·
+[CLI install and auth](https://antigravity.google/docs/cli/install)
+·
+[CLI hands-on codelab](https://codelabs.developers.google.com/antigravity-cli-hands-on)
 
 ### Step 4—Load the data
 
@@ -1035,7 +1049,7 @@ whether you made the choice on purpose and can say why.
 ·
 [BigQuery geospatial functions](https://cloud.google.com/bigquery/docs/reference/standard-sql/geography_functions)—`ST_DISTANCE`, `ST_GEOGPOINT`
 ·
-[Antigravity CLI](https://antigravity.google/docs/cli)
+[Antigravity](https://antigravity.google/docs/getting-started)—IDE and CLI
 
 **Our data sources, if you want to check our work**
 [CDC PLACES](https://www.cdc.gov/places/)
