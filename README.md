@@ -982,6 +982,12 @@ minutes.
 hours—that's the design, not a failure. A team that gets three quarters of the way with clear
 reasoning and honest limitations will beat a team that demos something polished and hollow.
 
+**You are judged against the track you chose**, not against a fixed idea of the right answer. A
+siting team is expected to produce a defensible calendar and argue for the ranking it picked; an
+explanation team is expected to produce something a person at a bus stop can read, in more than one
+language. Neither is marked down for not looking like the other—and whichever you demo, judges will
+ask about the two agents behind it. Say which track you took, early.
+
 | Dimension | Weight | The question judges are asking |
 |---|---:|---|
 | **Impact & insight** | 30 | Would an outreach lead actually use this? Is the plan specific enough to put on a calendar? |
