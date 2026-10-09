@@ -513,9 +513,9 @@ Antigravity CLI already installed. Nothing to set up on your laptop, no admin ri
 3. `cloudshell workspace .` opens the editor on it.
 
 New to any of this?
-[Using Cloud Shell](https://cloud.google.com/shell/docs/using-cloud-shell)
+[Using Cloud Shell](https://docs.cloud.google.com/shell/docs/using-cloud-shell)
 ·
-[Cloud Shell Editor overview](https://cloud.google.com/shell/docs/editor-overview)
+[Cloud Shell Editor overview](https://docs.cloud.google.com/shell/docs/editor-overview)
 
 **While you are here, enable the two APIs in one command.** The console will otherwise prompt you
 for them **twice**—once when Colab Enterprise first opens and again from a separate button on its
@@ -1046,11 +1046,11 @@ whether you made the choice on purpose and can say why.
 ## Reference
 
 **Your differentiator**
-[ADK documentation](https://google.github.io/adk-docs/)—start here
+[ADK documentation](https://adk.dev/)—start here
 ·
-[Multi-agent systems](https://google.github.io/adk-docs/agents/multi-agents/)—the patterns, and which one you want
+[Multi-agent systems](https://adk.dev/workflows/)—the patterns, and which one you want
 ·
-[Agent Runtime](https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/overview)—deployment
+[Agent Runtime](https://docs.cloud.google.com/gemini-enterprise-agent-platform/build/runtime)—deployment
 ·
 [`agent/README.md`](agent/README.md)—the API as it actually behaves today, verified 2026-08-10
 
@@ -1059,7 +1059,7 @@ whether you made the choice on purpose and can say why.
 ·
 [BigQuery MCP server](https://docs.cloud.google.com/bigquery/docs/use-bigquery-mcp)
 ·
-[BigQuery geospatial functions](https://cloud.google.com/bigquery/docs/reference/standard-sql/geography_functions)—`ST_DISTANCE`, `ST_GEOGPOINT`
+[BigQuery geospatial functions](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/geography_functions)—`ST_DISTANCE`, `ST_GEOGPOINT`
 ·
 [Antigravity](https://antigravity.google/docs/getting-started)—IDE and CLI
 
