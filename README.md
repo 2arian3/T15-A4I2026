@@ -965,6 +965,10 @@ agent/
                                       Empty otherwise. Your agent goes here
 ```
 
+`c5_90_publish_snapshot.ipynb` is for ROI maintainers: it regenerates the Cloud Storage snapshot
+that `scripts/load.sh` reads from. If you run it you will get a permissions error, because you do not
+have write access to our bucket. That is expected, and you never need it.
+
 `agent/` is empty on purpose. We built the on-ramp—every federally recognized care site in your
 county with coordinates, the tracts around them with disease burden and insurance and vehicle
 access, the federal shortage designations with the withdrawal trap already filtered, the air at the
