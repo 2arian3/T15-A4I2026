@@ -283,6 +283,9 @@ echo
 # opposed to whether the load worked. Every structural check above passes on a
 # county whose disease table is 201 rows of NULL, or whose safety-net gap does
 # not exist. Both load perfectly and then answer nothing.
+#
+# IFNULL on the aggregates: a NULL prints as an empty CSV field, and `read` then
+# shifts every later variable one column left.
 bold "Does this county actually support the challenge?"
 read -r tracts sites gap worst hpsa trend weeks <<<"$(
   bq --project_id="${PROJECT_ID}" --location="${LOCATION}" \
@@ -290,12 +293,12 @@ read -r tracts sites gap worst hpsa trend weeks <<<"$(
      "SELECT
         (SELECT COUNT(*) FROM \`${PROJECT_ID}.${DATASET}.burden_tracts\`),
         (SELECT COUNT(*) FROM \`${PROJECT_ID}.${DATASET}.care_sites\`),
-        (SELECT COUNTIF(extra_km_if_uninsured > 0)
+        (SELECT IFNULL(COUNTIF(extra_km_if_uninsured > 0), 0)
            FROM \`${PROJECT_ID}.${DATASET}.tract_access\`),
-        (SELECT ROUND(MAX(km_to_safety_net), 1)
+        (SELECT IFNULL(ROUND(MAX(km_to_safety_net), 1), 0)
            FROM \`${PROJECT_ID}.${DATASET}.tract_access\`),
         (SELECT COUNT(*) FROM \`${PROJECT_ID}.${DATASET}.shortage_areas\`),
-        (SELECT COUNTIF(percent_visits_covid IS NOT NULL)
+        (SELECT IFNULL(COUNTIF(percent_visits_covid IS NOT NULL), 0)
            FROM \`${PROJECT_ID}.${DATASET}.disease_weekly\`),
         (SELECT COUNT(*) FROM \`${PROJECT_ID}.${DATASET}.disease_weekly\`)" \
   | tail -n 1 | tr ',' ' '

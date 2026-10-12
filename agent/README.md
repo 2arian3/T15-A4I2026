@@ -56,6 +56,11 @@ probe 2 below finds it in a single question.
 
 ## The API, verified in a lab project on 2026-08-10
 
+Verified against `google-adk==2.7.0` on 2026-08-10; PyPI's current release is 2.11.0, so run
+`pip show google-adk` and try the import below before you build on it. Pin the version you
+verified—`pip install google-adk==2.7.0`—before you paste anything in this section; the `Workflow`
+graph API is new and the class names here are specific to it.
+
 **`SequentialAgent`, `ParallelAgent` and `LoopAgent` all still work, and all three are deprecated**
 in favor of the graph `Workflow`:
 
@@ -89,7 +94,7 @@ plan_graph = Workflow(
     description="Plans mobile clinic stops for a county.",   # REQUIRED to use as a tool
     input_schema=PlanRequest,                                # ALSO REQUIRED
     timeout=120.0,                                           # SEE BELOW. NOT OPTIONAL.
-    edges=[(START, gather_burden, ...)],
+    edges=[(START, gather_burden)],   # add your remaining edges here
 )
 
 root_agent = LlmAgent(name="coordinator", model="gemini-3.6-flash", tools=[plan_graph])
@@ -125,6 +130,7 @@ means a typo surfaces immediately—but it also means you must run every agent o
 ### How to see it working, which is most of debugging
 
 ```python
+from google.adk.runners import InMemoryRunner   # confirm the path against your pinned version
 from google.adk.plugins import LoggingPlugin
 runner = InMemoryRunner(agent=root_agent, plugins=[LoggingPlugin()])
 await runner.run_debug("Plan next month's clinic stops.", verbose=True)

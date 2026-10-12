@@ -170,7 +170,7 @@ and having a judge find it reads as the opposite.
 ## Now pick your county
 
 A county health department is a real organization with a real mobile clinic, and the county is the
-level at which somebody actually decides where the van goes on Tuesday. Change one line at the top
+level at which somebody actually decides where the van goes on Tuesday. Change one cell at the top
 of the notebook and everything follows.
 
 **You do not have to pick the county you are sitting in.** Pick the one that makes your story.
@@ -179,7 +179,7 @@ Every number below was measured, not estimated—it comes from the run that prod
 Cloud Storage, so you are choosing with your eyes open. **Read the last four columns.** The first
 few tell you how big the county is; the last four tell you whether the challenge works there.
 
-| County | Tracts | Population | Uninsured 18-64 p10→p90 | Tracts with a safety-net gap | Worst km to a safety-net clinic | Shortage **areas** desig/all | Shortage **facilities** | Transport measure | Disease trend |
+| County | Tracts | Population | Uninsured 18-64 p10→p90 | Tracts with a safety-net gap | Worst km to a safety-net clinic | Shortage **areas** desig/all | Shortage **facilities** | Transport measure (`pct_lack_transport`) | Disease trend |
 |---|---:|---:|---|---:|---:|---:|---:|:-:|:-:|
 | **Fulton GA** (Atlanta) | 326 | 1,066,710 | 5.9% → 18.2% | **135 (41%)** | **28.6** | **0 / 99** | 6 | ✅ | ✅ |
 | **Santa Clara CA** (Sunnyvale) | 408 | 1,936,259 | 3.0% → 14.6% | 116 (28%) | 15.9 | **0 / 0** | 13 | ✅ | ❌ |
@@ -219,7 +219,8 @@ to week**, so if your demo is "the van follows the respiratory surge", it does n
 Sunnyvale or New York.
 
 **Harris and Travis have no transportation measure.** CDC PLACES publishes `LACKTRPT`—lack of
-reliable transportation—for 40 states and not the other 11, and Texas is one of the 11. Neither
+reliable transportation—for 40 states and not the other 11, and Texas is one of the 11, so the
+`pct_lack_transport` column in `burden_tracts` is NULL in every row for both counties. Neither
 county is blind to transport: `pct_no_vehicle` from CDC SVI survives, and it measures vehicle
 *ownership*, which is not the same as being able to get a ride. Know which one you are quoting.
 
@@ -517,12 +518,12 @@ New to any of this?
 ·
 [Cloud Shell Editor overview](https://docs.cloud.google.com/shell/docs/editor-overview)
 
-**While you are here, enable the two APIs in one command.** The console will otherwise prompt you
+**While you are here, enable the APIs in one command.** The console will otherwise prompt you
 for them **twice**—once when Colab Enterprise first opens and again from a separate button on its
 home page—and that second prompt is the single most common way to lose ten minutes this morning:
 
 ```bash
-gcloud services enable aiplatform.googleapis.com bigquery.googleapis.com
+gcloud services enable aiplatform.googleapis.com bigquery.googleapis.com notebooks.googleapis.com dataform.googleapis.com compute.googleapis.com
 ```
 
 One thing worth knowing: your `$HOME` directory persists between sessions. Anything outside it
@@ -573,23 +574,25 @@ own. Review before you accept.
 1. In the Google Cloud console, search for **Colab Enterprise** and open it.
 2. **You'll be asked to enable some APIs. Say yes.** Then the Colab Enterprise home page shows
    *another* **Enable APIs** button at the top. Click that too. Two prompts is expected—it isn't an
-   error and you haven't done anything wrong. (If you ran the `gcloud` command in Step 3, both are
-   already done.)
+   error and you haven't done anything wrong. (If you ran the `gcloud` command in Step 3, you may
+   not see them.)
 3. **My Notebooks** → **Import** → source **URL**, and paste this:
 
    ```
    https://raw.githubusercontent.com/haggman/A4I2026-challenge-5-public-health/main/notebooks/c5_01_load_explore.ipynb
    ```
 
-4. Click **Import**, open the notebook, set `COUNTY_FIPS`, `COUNTY_NAME` and `STATE_ABBR` at the
-   top, and run the cells top to bottom. It takes **two to three minutes** to run and rather longer
-   to read.
+4. Click **Import**, open the notebook, set `COUNTY_FIPS` at the top (and the matching
+   `COUNTY_NAME` and `STATE_ABBR`—the cell checks them), and run the cells top to bottom. It takes
+   **two to three minutes** to run and rather longer to read.
 
 **Read the text between the cells.** Several explanations will save you time later, and one of
 them—section 2, where the obvious answer fails on purpose—is something judges will ask you about
 directly.
 
-**If the notebook won't run**, there's a headless fallback. From the repo root in Cloud Shell:
+**If the notebook won't run**, or a federal data server starts refusing the room (150 people hitting
+one endpoint in ten minutes looks like an attack to some of them), there's a headless fallback. The
+snapshot already has everything the notebook pulls. From the repo root in Cloud Shell:
 
 ```bash
 bash scripts/load.sh 13121
@@ -620,7 +623,7 @@ describe care, and one is the join we did for you**:
 
 | Table | Role | What it is |
 |---|---|---|
-| `burden_tracts` | People | One row per census tract—uninsured, checkup, asthma, COPD, diabetes, blood pressure, disability and mobility, no-vehicle households, over-65 share, and a centroid |
+| `burden_tracts` | People | One row per census tract—uninsured, checkup, asthma, COPD, diabetes, blood pressure, disability and mobility, lack of transportation (`pct_lack_transport`, NULL in 11 states), no-vehicle households, over-65 share, and a centroid |
 | `exposure_tracts` | People | One row per tract—mean and maximum PM2.5 and the number of days over each of four thresholds. **Read section 2 before you rank on it.** Its tract set is slightly *larger* than `burden_tracts`, because EPA models every tract that exists and PLACES suppresses the ones too small to model—so join LEFT from burden, not INNER |
 | `disease_weekly` | People | One row per week—emergency-department visit percentages for COVID, influenza and RSV. **A Health Service Area figure on a county key** |
 | `care_sites` | Care | Every federally recognized care site inside your county, with coordinates and a `site_kind` |
@@ -715,9 +718,9 @@ And the tract at the top of the list when you cross need against distance:
 > **Tract 13121010214.** 1,938 people. 14% of working-age adults uninsured. **43% of households
 > have no vehicle.** 8.1 km from a clinic that will see them.
 
-**A car makes eight kilometers nothing. No car makes eight kilometers a day off work**, two bus
-transfers, and childcare. That is the gap a mobile clinic exists to close, and it is the strongest
-single argument your demo can make.
+**For that tract, a car makes eight kilometers nothing. No car makes eight kilometers a day off
+work**, two bus transfers, and childcare. That is the gap a mobile clinic exists to close, and it is
+the strongest single argument your demo can make.
 
 #### The warning that comes with those numbers
 
@@ -730,6 +733,10 @@ pharmacy minute-clinics are not in these files because no license-clean national
 exists. **Every distance above is therefore an upper bound**—the real nearest option may be closer
 and we cannot see it. Do not report these as "the nearest care available." Report them as "the
 nearest federally recognized site," which is what they are.
+
+**Our distances stop at the county line.** `tract_access` measures to sites inside the county. A
+tract on the border may be closer to a clinic in the next county. `care_sites_state` is there so you
+can re-measure; if you do, say so.
 
 **And the ranking is only as good as the estimate underneath it.** PLACES values are modeled, not
 counted—a prediction about people like the people who live there, smoothed toward the mean. Two
@@ -775,7 +782,7 @@ The notebook does not hand you a cleaned table, because these are the teaching:
    of the four disability measures.
 9. **There are two uninsured columns and they disagree on purpose.** `pct_uninsured` from PLACES
    measures **adults aged 18 to 64**; `pct_uninsured_all_ages` from CDC SVI measures the whole
-   civilian non-institutionalised population. Because Medicare covers almost everyone over 65,
+   civilian non-institutionalized population. Because Medicare covers almost everyone over 65,
    PLACES reads higher wherever a tract skews elderly. **Pick one as your headline number and say
    which.** A team that quotes both without noticing they measure different populations has an
    inconsistency in its own output that a judge will find in about fifteen seconds. A team that
@@ -868,17 +875,20 @@ does that nobody else's will:
 - **Load the confidence intervals.** Every PLACES measure has a `_crude95ci` twin. If two tracts
   differ by less than their intervals overlap, your ranking is decorative. It is a two-line change
   and a strong add-on.
-- **Use the pre-computed percentile ranks.** CDC SVI ships `EPL_*` columns—every variable already
-  ranked 0 to 1 against every tract in the country. For a "rank the neighborhoods" problem that is
-  usually the column you actually want, and most teams miss it and re-derive it badly.
+- **Use the pre-computed percentile ranks.** CDC SVI ships `EPL_*` columns—two of them are already
+  in `burden_tracts` as `pctile_no_vehicle` and `pctile_uninsured`; the rest are one `wanted` list
+  entry away in section 5 of the notebook. Every variable is already ranked 0 to 1 against every
+  tract in the country. For a "rank the neighborhoods" problem that is usually the column you
+  actually want, and most teams miss it and re-derive it badly.
 - **Use opening hours as capacity.** The HRSA health center layer carries `TOT_OPER_HR_PER_WEEK`,
   and no other layer has it. A clinic open eight hours a week and one open sixty are not the same
   supply. Across the five states we measured the median site runs 40 to 43 hours, and individual
   sites range from **0 to 168**—a full week. It is close to fully populated, and treating a facility
   list as a list of equivalent dots throws it away.
-- **Check your exceedance ranking against the model's own error.** `ds_pm_stdd` is in the data. A
-  sampled daily estimate came back as 3.65 with a standard error of 1.32, so near a threshold
-  whether a day counts is partly the model's residual rather than the air.
+- **Check your exceedance ranking against the model's own error.** `ds_pm_stdd` is in the source
+  file (not in `exposure_tracts`—cell 22 of the notebook pulls it for one tract; extend that
+  query). A sampled daily estimate came back as 3.65 with a standard error of 1.32, so near a
+  threshold whether a day counts is partly the model's residual rather than the air.
 - **Add ozone.** Dataset `hf2a-3ebq`, for a summer respiratory story. Its keys are numeric so `LIKE`
   will not work, its years and its tract set differ from the PM2.5 file, and you must join on the
   intersection and report both row counts. About fifteen lines, and genuinely good.
@@ -1027,7 +1037,7 @@ cannot describe a street. Your clinic list is federal only, so every distance is
 Four of six counties have no shortage areas and two have no disease trend at all. A team that
 volunteers its limitations shows more skill than one that oversells—and judges are told to reward it.
 
-One warning worth internalising: **in this domain a confident wrong answer is the worst possible
+One warning worth internalizing: **in this domain a confident wrong answer is the worst possible
 output.** An agent that says "respiratory illness is rising in this neighborhood" from a
 four-county number, or ranks tracts on an air-quality difference of two percent, has produced
 something plausible, specific and false about people's health. A judge who asks "which scale did

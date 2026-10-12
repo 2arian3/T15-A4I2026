@@ -16,7 +16,7 @@ After the notebook or `load.sh` runs, in `<your-project>.a4i_health`:
 
 | Table | Grain | What it holds |
 |---|---|---|
-| `burden_tracts` | one row per census tract | uninsured, routine checkup, asthma, COPD, diabetes, blood pressure, four disability measures, no-vehicle households, over-65 and under-17 share, limited English, no internet, three SVI theme scores, and a centroid |
+| `burden_tracts` | one row per census tract | uninsured, routine checkup, asthma, COPD, diabetes, blood pressure, four disability measures, lack of transportation (`pct_lack_transport`, NULL in 11 states), no-vehicle households, over-65 and under-17 share, limited English, no internet, three SVI theme scores, and a centroid |
 | `exposure_tracts` | one row per census tract | mean and maximum PM2.5, and days over 12, 20, 25 and 35 µg/m³ |
 | `tract_access` | one row per census tract | distance to the nearest care site of any kind, distance to the nearest safety-net site, and the difference between them |
 | `care_sites` | one row per facility | every federally recognized care site inside your county, with coordinates, address and `site_kind` |

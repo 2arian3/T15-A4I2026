@@ -12,6 +12,7 @@ env/
 # Credentials - never commit these
 *.json.key
 service-account*.json
+credentials.json
 .env
 
 # OS
