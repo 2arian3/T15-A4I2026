@@ -56,8 +56,9 @@ probe 2 below finds it in a single question.
 
 ## The API, verified in a lab project on 2026-08-10
 
-Verified against `google-adk==2.7.0` on 2026-08-10; PyPI's current release is 2.11.0, so run
-`pip show google-adk` and try the import below before you build on it. Pin the version you
+Verified against `google-adk==2.7.0` on 2026-08-10. PyPI's current release is 2.11.0, and on
+2026-10-12 every class named in this section still imported cleanly from it—imports, not behavior,
+so run `pip show google-adk` and try the import below before you build on it. Pin the version you
 verified—`pip install google-adk==2.7.0`—before you paste anything in this section; the `Workflow`
 graph API is new and the class names here are specific to it.
 
