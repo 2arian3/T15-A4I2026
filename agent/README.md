@@ -15,8 +15,8 @@ on.
 - **An ADK agent**, in Python.
 - **Genuine multi-agent orchestration.** This is your required differentiator. More than one agent,
   passing state, with at least two whose instructions actually conflict. [What that means
-  concretely](#what-multi-agent-actually-has-to-mean-here) is below, and the four questions a judge
-  will ask are at the bottom of this file.
+  concretely](#what-multi-agent-actually-has-to-mean-here) is below, and the four questions judges
+  look for are at the bottom of this file.
 - **At least one tool you built yourself.** A Python function tool, or one you defined in MCP
   Toolbox—either counts. The obvious candidate wraps a tract query. The more valuable one holds the
   logic that is not a single query: deciding what "needs the van" means, weighing a modeled
@@ -143,7 +143,7 @@ it fifty times.
 
 In `adk web`, the **State** tab plus the event graph lets you click an event and see which node
 produced it. On a multi-agent challenge that is not a convenience, it is the only view of the thing
-you are being judged on. If a judge asks how you debugged it, "we watched the event graph" is a
+you are being judged on. When the deck says how you debugged it, "we watched the event graph" is a
 better answer than "we read the final output."
 
 Two environment notes. In a notebook use a bare `await`, because `asyncio.run()` raises inside a
@@ -177,10 +177,10 @@ publicly"* is more useful, more honest, and will score better.
 That is the same shape as the trap in section 2 of the notebook, and it is the shape of the whole
 challenge.
 
-## The four questions a judge will ask
+## The four questions judges look for
 
-They are printed in the README too, so you have had them all day. Be ready to answer them at a
-keyboard rather than on a slide.
+They are printed in the README too, so you have had them all day. Answer them in the deck or the
+pitch video; nobody will ask them at a keyboard.
 
 1. **Delete any one agent. Does the answer get worse?** If not, that agent was decoration. The
    strongest version of this answer is a before and after you can show.

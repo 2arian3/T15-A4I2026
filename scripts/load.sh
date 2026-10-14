@@ -362,6 +362,6 @@ echo "  Next: build your agent. Your differentiator is ADK multi-agent orchestra
 echo "  which is an ARCHITECTURE rather than a query - so unlike the other challenges"
 echo "  you cannot bolt it on at the end. Decide the shape in the first ten minutes."
 echo "  Section 13 of the notebook has the working API, the five things that will cost"
-echo "  you an hour, and the four questions a judge will ask. Read it even if you are"
+echo "  you an hour, and the four questions judges look for. Read it even if you are"
 echo "  skipping the rest of the notebook."
 echo

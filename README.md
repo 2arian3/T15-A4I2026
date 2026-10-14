@@ -44,7 +44,7 @@ what each of you needs in the first fifteen minutes.
 | **Data lane** | [Step 4, load the data](#step-4load-the-data) · [What you'll have](#what-youll-have) | [The data, and why we chose it](#the-data-and-why-we-chose-it) · Section 12 of the notebook |
 | **Agent lane** | [The technology](#the-technology-youll-use)—**all of it, now.** Your differentiator is an architecture and you cannot bolt it on at the end | [`agent/README.md`](agent/README.md) · Section 13 of the notebook · [Reference](#reference) |
 | **Front end lane** | [Front end lane](#front-end-lane2-people) | [Your output artifact](#your-output-artifact-the-clinic-plan) |
-| **Story lane** | [What the data actually says](#what-the-data-actually-says) | [Your output artifact](#your-output-artifact-the-clinic-plan) · [The data](#the-data-and-why-we-chose-it)—which numbers are measured and which are modeled, because you will be asked |
+| **Story lane** | [What the data actually says](#what-the-data-actually-says) | [Your output artifact](#your-output-artifact-the-clinic-plan) · [The data](#the-data-and-why-we-chose-it)—which numbers are measured and which are modeled, because judges check |
 
 **Three things everybody should know by the end of hour one**, whatever lane you are in:
 
@@ -337,9 +337,9 @@ each other's state, and the JSON-string-not-dict runner signature—are in
 [`agent/README.md`](agent/README.md) and in section 13 of the notebook, both verified in this environment on
 2026-08-10. **Read one of them before you write a line.**
 
-#### The four questions a judge will ask
+#### The four questions judges look for
 
-You may as well be ready. These are the actual questions, and they are all the same question.
+Answer them in your deck or your video; nobody will ask them in person. These are the actual questions, and they are all the same question.
 
 1. *Delete any one agent. Does the answer get worse?* If not, that agent was decoration.
 2. *Show me a key in `session.state` written by one agent and read by another.* If there isn't one,
@@ -387,7 +387,7 @@ owns everything between raw tables and a query the agent can call:
   challenges: an *input* to the agent, not a step 4.
 - **Decide what "needs the van" means** and encode it. Top decile on uninsured? Worst on three
   measures at once? Distance-weighted by no-vehicle share? This is a modeling decision, it is
-  yours, and you will be asked for it.
+  yours, and judges look for it.
 - **Keep track of which resolution each number came from**, all the way through. If it collapses
   anywhere in your pipeline it will collapse in your agent's answers too.
 - **Read the WARN rows** the validation section prints. They are real defects in federal data and at
@@ -474,8 +474,8 @@ that lands beats a thorough walkthrough nobody has time to hear.**
 - **The strongest thing you can say on stage is a number from your own data that surprised you.**
   Not a slide of architecture boxes. One number, one neighborhood, one sentence.
 - **The honest limitations.** Judges explicitly reward this. One line in the deck is enough.
-- **Know which of your numbers are measured and which are modeled.** You will be asked. The answer
-  is in the notebook and it is a good one—make sure whoever presents can give it.
+- **Know which of your numbers are measured and which are modeled.** Judges check. The answer
+  is in the notebook and it is a good one—make sure the deck or the video gives it.
 
 Time the whole thing out loud at least once. Teams almost always run long.
 
