@@ -525,7 +525,7 @@ Antigravity CLI already installed. Nothing to set up on your laptop, no admin ri
 (The Antigravity IDE launches from a button in your Skills lab environment; see below.)
 
 1. In the Cloud console, click the **`>_`** terminal icon, top right.
-2. `git clone <your team repo URL>`
+2. `git clone <your team repo URL>`, then `cd` into the folder it makes (your repo's name).
 3. `cloudshell workspace .` opens the editor on it.
 
 New to any of this?
