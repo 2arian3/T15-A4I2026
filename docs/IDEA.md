@@ -15,10 +15,10 @@ A planner agent picks four Saturday stops from measured need and access data, wi
 **Choice:** Plan where the van goes, never who to treat.
 **Why:** The event prohibits individual-level data. It also keeps us out of clinical advice, which the README says is a line "that has no version that scores well."
 
-### 2. Evidence gathering: three parallel agents, three state keys
-**Choice:** `burden_agent`, `access_agent`, `context_agent`, each writing a distinct `output_key`.
-**Why:** The three lookups are independent, so running them in parallel costs one step instead of three. ADK parallel branches share one state dict, and the README warns that shared keys fail silently. Distinct keys prevent that.
-**Why the third agent exists:** its job is to say what air quality and the regional respiratory trend *cannot* tell us. The PM2.5 data is a 12 km grid and the disease trend is a multi-county region, so neither can rank neighborhoods.
+### 2. Evidence gathering: plain code, not agents (simplified)
+**Choice:** Burden, access and context lookups are deterministic functions, not LLM agents. They write distinct state keys (`burden_findings`, `access_findings`, `context_findings`).
+**Why:** A lookup that only calls one query does not need a model, and a judge asking "delete this agent, does the answer get worse?" would find these agents are decoration. Plain code is also faster, cheaper and cannot hallucinate. If we later want parallel evidence, ADK parallel branches share one state dict, so each needs its own key.
+**What the context lookup must still say:** air quality is a 12 km grid and the disease trend is a multi-county region, so neither can rank neighborhoods.
 
 ### 3. Need index: measured data leads, modeled data is a tiebreaker
 **Choice:** Weight measured inputs (uninsured share, no-vehicle share, access gap) above modeled ones (PLACES chronic-disease prevalence). Treat tracts whose scores are inside each other's margin as ties.
@@ -69,12 +69,14 @@ A planner agent picks four Saturday stops from measured need and access data, wi
 
 | Agent | Sees | Forbidden | Writes | Prompt style |
 |---|---|---|---|---|
-| burden / access / context | its own table summary | demographics | `burden_findings`, `access_findings`, `context_findings` | factual, scale-tagged |
-| planner | evidence + prior audit/review | demographics | `plan_data`, `plan_summary` | decisive |
-| equity auditor | plan + demographics | planner's reasoning | `audit_data`, `audit_report` | adversarial, report-verbatim |
-| reviewer | plan + audit | n/a | `review_report` | hedge, cite, refuse |
-| approval gate (non-LLM) | `approved` flag | n/a | loop escalate | deterministic |
-| explainer | approved plan only | raw data | `flyer` | warm, plain, no hedging |
+| evidence step (plain code, not an agent) | tables | demographics | `burden_findings`, `access_findings`, `context_findings` | n/a |
+| planner (LLM) | evidence + prior audit | demographics | `plan_data`, `plan_summary` | decisive |
+| equity auditor (LLM + tool) | plan + demographics | planner's reasoning | `audit_data`, `audit_report` | adversarial, report-verbatim |
+| approval gate (plain code) | `approved` flag | n/a | loop escalate | deterministic |
+| explainer (LLM) | approved plan only | raw data | `flyer` | warm, plain, no hedging |
+| reviewer (LLM) | flyer + plan text | n/a | `review_report` | hedge, cite, refuse |
+
+**Build order (each stage works on its own):** 1) evidence + planner + auditor + gate, 2) explainer, 3) reviewer on the flyer, 4) human approval step. Stop after any stage and you still have a working demo.
 
 ## The four judge questions
 1. **Delete one agent:** drop the auditor and a plan with clustered or tied stops goes out unchecked (show before and after).
