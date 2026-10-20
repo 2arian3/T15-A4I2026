@@ -306,7 +306,7 @@ function normalizeAgentResult(payload) {
   return null;
 }
 
-window.AGENT_ENGINE_URL = window.AGENT_ENGINE_URL || "http://localhost:8002/agent";
+window.AGENT_ENGINE_URL = window.AGENT_ENGINE_URL || "http://127.0.0.1:8002/agent";
 
 async function callAgentEngine(payload) {
   const endpoint = window.AGENT_ENGINE_URL || "";

@@ -1,9 +1,36 @@
 import json
 import os
-import re
 import shutil
 import subprocess
+import time
 from typing import Any
+
+# #region agent log
+_DEBUG_LOG = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".cursor",
+    "debug-199fba.log",
+)
+
+
+def _debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(_DEBUG_LOG), exist_ok=True)
+        line = json.dumps(
+            {
+                "sessionId": "199fba",
+                "hypothesisId": hypothesis_id,
+                "location": location,
+                "message": message,
+                "data": data,
+                "timestamp": int(time.time() * 1000),
+            }
+        )
+        with open(_DEBUG_LOG, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except Exception:
+        pass
+# #endregion
 
 import requests
 from flask import Flask, jsonify, request
@@ -41,7 +68,6 @@ def get_google_access_token() -> str:
     executable = shutil.which("gcloud") or shutil.which("gcloud.cmd") or r"C:\Users\Nirmal\AppData\Local\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
 
     try:
-        subprocess.check_call([executable, "config", "set", "account", STUDENT_ACCOUNT], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         token = subprocess.check_output(
             [executable, "auth", "print-access-token", "--account", STUDENT_ACCOUNT],
             stderr=subprocess.STDOUT,
@@ -101,6 +127,57 @@ def extract_lat_lng(data: Any):
     return lat, lng
 
 
+def coordinates_from_response(data: Any) -> tuple[float, float, str]:
+    """Read the pin from plan_data. A failed plan raises its error_message."""
+    plans = [
+        plan for plan in walk_values(data, {"plan_data"}) if isinstance(plan, dict)
+    ]
+    # #region agent log
+    _debug_log(
+        "B",
+        "proxy_server.py:coordinates_from_response",
+        "plan_data found in engine output",
+        {
+            "plan_count": len(plans),
+            "statuses": [plan.get("status") for plan in plans],
+            "tract_counts": [
+                len(plan.get("selected_tracts") or [])
+                if isinstance(plan.get("selected_tracts"), list)
+                else None
+                for plan in plans
+            ],
+            "error_prefixes": [
+                str(plan.get("error_message") or "")[:180] for plan in plans
+            ],
+        },
+    )
+    # #endregion
+    for plan in plans:
+        tracts = plan.get("selected_tracts") or []
+        if not isinstance(tracts, list):
+            continue
+        for tract in tracts:
+            if not isinstance(tract, dict):
+                continue
+            try:
+                lat = float(tract["latitude"])
+                lng = float(tract["longitude"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            summary = tract.get("selection_reason") or extract_summary(data)
+            return lat, lng, str(summary)
+    for plan in plans:
+        if plan.get("status") == "error":
+            raise RuntimeError(str(plan.get("error_message") or "Siting plan failed."))
+    lat, lng = extract_lat_lng(data)
+    if lat is None or lng is None:
+        raise RuntimeError(
+            "The agent response did not include usable latitude/longitude values. "
+            f"Raw payload: {json.dumps(data)[:1200]}"
+        )
+    return lat, lng, extract_summary(data)
+
+
 def extract_summary(data: Any) -> str:
     for key in ("summary", "message", "text", "output", "response"):
         for value in walk_values(data, {key}):
@@ -115,17 +192,30 @@ def extract_summary(data: Any) -> str:
     return "Agent response received."
 
 
-def call_reasoning_engine(prompt: str):
+def call_reasoning_engine(prompt: str, user_id: str = "frontend-demo"):
+    # #region agent log
+    _debug_log(
+        "C",
+        "proxy_server.py:call_reasoning_engine",
+        "requesting access token",
+        {"user_id": user_id, "prompt_len": len(prompt)},
+    )
+    # #endregion
     token = get_google_access_token()
+    # #region agent log
+    _debug_log(
+        "C",
+        "proxy_server.py:call_reasoning_engine",
+        "access token acquired",
+        {"token_present": bool(token)},
+    )
+    # #endregion
     payload = {
+        "class_method": "async_stream_query",
         "input": {
-            "messages": [
-                {
-                    "role": "user",
-                    "parts": [{"text": prompt}],
-                }
-            ]
-        }
+            "user_id": user_id,
+            "message": prompt,
+        },
     }
 
     response = requests.post(
@@ -137,6 +227,18 @@ def call_reasoning_engine(prompt: str):
         json=payload,
         timeout=120,
     )
+    # #region agent log
+    _debug_log(
+        "A",
+        "proxy_server.py:call_reasoning_engine",
+        "reasoning engine responded",
+        {
+            "status": response.status_code,
+            "bytes": len(response.content),
+            "engine": REASONING_ENGINE_URL.rsplit("/", 1)[-1],
+        },
+    )
+    # #endregion
 
     if response.status_code >= 400:
         try:
@@ -156,29 +258,11 @@ def call_reasoning_engine(prompt: str):
     except ValueError as exc:
         raise RuntimeError(f"Agent response was not valid JSON: {response.text[:500]}") from exc
 
-    lat, lng = extract_lat_lng(data)
-    if lat is None or lng is None:
-        # Try to recover lat/lng from a raw text blob if the model returned a natural-language answer.
-        text_blob = extract_summary(data)
-        matches = re.findall(r"(-?\d+\.\d+)", text_blob)
-        if len(matches) >= 2:
-            try:
-                lat = float(matches[-2])
-                lng = float(matches[-1])
-            except ValueError:
-                lat = None
-                lng = None
-
-    if lat is None or lng is None:
-        raise RuntimeError(
-            "The agent response did not include usable latitude/longitude values. "
-            f"Raw payload: {json.dumps(data)[:1200]}"
-        )
-
+    lat, lng, summary = coordinates_from_response(data)
     return {
         "lat": lat,
         "lng": lng,
-        "summary": extract_summary(data),
+        "summary": summary,
         "raw": data,
     }
 
@@ -196,14 +280,40 @@ def agent_proxy():
         or data.get("query")
         or ""
     )
+    if not prompt:
+        new_message = data.get("new_message")
+        parts = new_message.get("parts") if isinstance(new_message, dict) else None
+        if isinstance(parts, list):
+            prompt = "".join(
+                part.get("text", "")
+                for part in parts
+                if isinstance(part, dict)
+            )
 
     if not prompt or not str(prompt).strip():
         return jsonify({"error": "Missing request prompt."}), 400
 
+    user_id = str(data.get("user_id") or "frontend-demo")
+    # #region agent log
+    _debug_log(
+        "E",
+        "proxy_server.py:agent_proxy",
+        "accepted /agent body",
+        {"keys": sorted(data.keys()), "user_id": user_id, "prompt_len": len(str(prompt))},
+    )
+    # #endregion
     try:
-        result = call_reasoning_engine(str(prompt).strip())
+        result = call_reasoning_engine(str(prompt).strip(), user_id=user_id)
         return jsonify(result)
     except Exception as exc:  # pragma: no cover
+        # #region agent log
+        _debug_log(
+            "D",
+            "proxy_server.py:agent_proxy",
+            "proxy returning 500",
+            {"exc_type": type(exc).__name__, "exc": str(exc)[:500]},
+        )
+        # #endregion
         return jsonify({"error": str(exc)}), 500
 
 
