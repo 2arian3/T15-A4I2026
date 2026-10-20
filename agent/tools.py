@@ -13,6 +13,8 @@ from typing import Any, TypedDict
 
 from google.adk.tools.tool_context import ToolContext
 
+from .schemas import SitingPlan
+
 
 class TableResolution(TypedDict):
     table: str
@@ -419,20 +421,23 @@ def rank_and_select_siting_plan(
     Evaluates healthcare needs (`burden_tracts`), safety-net clinic accessibility
     (`tract_access`), transportation barriers (`pct_no_vehicle`, `pct_mobility_difficulty`),
     and regional respiratory trends (`disease_weekly`) without using race or ethnicity
-    as an input. Stores the resulting siting plan in `session.state["siting_plan"]`
-    for downstream review by the Accountability Agent.
+    as an input. Stores the resulting siting plan in `session.state["plan_data"]`
+    for the equity auditor.
 
     Args:
         min_separation_km: Minimum straight-line distance in km between the 4
             selected Saturday tracts so the van covers distinct geographic areas.
         top_n: Number of top-ranked candidate tracts to retrieve from BigQuery.
-        tool_context: Optional ADK ToolContext used to persist `siting_plan` in
+        tool_context: Optional ADK ToolContext used to persist `plan_data` in
             `session.state`.
 
     Returns:
-        A dict containing `status`, `selected_tracts` (4 Saturday stops with
-        scores, metrics, reasons, and alternative comparisons), `candidate_pool`,
-        and `limitations`.
+        A `SitingPlan` dict. On success it contains `selected_tracts` (4 Saturday
+        stops with scores, metrics, reasons, and alternative comparisons),
+        `methodology`, `limitations`, `candidate_pool`, and
+        `skipped_adjacent_high_need_tracts`. On failure `status` is `error` and
+        `error_message` explains why. The same dict is stored in
+        `session.state["plan_data"]`.
     """
     from google.cloud import bigquery
 
@@ -454,10 +459,13 @@ def rank_and_select_siting_plan(
         query_job = client.query(sql)
         rows = [dict(row.items()) for row in query_job.result()]
     except Exception as exc:
-        return {
-            "status": "error",
-            "error_message": f"BigQuery siting query failed: {exc}",
-        }
+        siting_plan = SitingPlan(
+            status="error",
+            error_message=f"BigQuery siting query failed: {exc}",
+        ).model_dump()
+        if tool_context is not None and hasattr(tool_context, "state"):
+            tool_context.state["plan_data"] = siting_plan
+        return siting_plan
 
     selected_tracts, skipped_nearby = select_four_saturday_tracts(
         candidates=rows,
@@ -500,27 +508,184 @@ def rank_and_select_siting_plan(
         },
     ]
 
-    siting_plan = {
-        "status": "success",
-        "project": project,
-        "dataset": dataset,
-        "methodology": {
-            "weights": {
-                "healthcare_needs": 0.35,
-                "accessibility_barriers": 0.35,
-                "transportation_and_mobility_barriers": 0.25,
-                "environmental_pm25_context": 0.05,
+    siting_plan = SitingPlan.model_validate(
+        {
+            "status": "success",
+            "project": project,
+            "dataset": dataset,
+            "methodology": {
+                "weights": {
+                    "healthcare_needs": 0.35,
+                    "accessibility_barriers": 0.35,
+                    "transportation_and_mobility_barriers": 0.25,
+                    "environmental_pm25_context": 0.05,
+                },
+                "race_or_ethnicity_used_in_scoring": False,
+                "min_separation_km": float(min_separation_km),
             },
-            "race_or_ethnicity_used_in_scoring": False,
-            "min_separation_km": float(min_separation_km),
-        },
-        "selected_tracts": selected_tracts,
-        "skipped_adjacent_high_need_tracts": skipped_nearby,
-        "candidate_pool": rows,
-        "limitations": limitations,
-    }
+            "selected_tracts": selected_tracts,
+            "skipped_adjacent_high_need_tracts": skipped_nearby,
+            "candidate_pool": rows,
+            "limitations": limitations,
+        }
+    ).model_dump()
 
     if tool_context is not None and hasattr(tool_context, "state"):
-        tool_context.state["siting_plan"] = siting_plan
+        tool_context.state["plan_data"] = siting_plan
 
     return siting_plan
+
+
+AUDIT_COLUMN = "svi_racial_ethnic"
+
+AUDIT_PLAN_SQL_TEMPLATE = """\
+WITH selected AS (
+    SELECT geo_id FROM UNNEST([{geo_id_array}]) AS geo_id
+)
+SELECT
+    b.geo_id,
+    b.total_pop,
+    NULLIF(b.svi_racial_ethnic, -999) AS svi_racial_ethnic,
+    s.geo_id IS NOT NULL AS is_selected
+FROM `{project}.{dataset}.burden_tracts` AS b
+LEFT JOIN selected AS s
+    ON b.geo_id = s.geo_id
+WHERE b.total_pop >= 500
+"""
+
+
+def _population_weighted_mean(
+    rows: list[dict[str, Any]], column: str
+) -> float | None:
+    weighted = 0.0
+    population = 0.0
+    for row in rows:
+        value = row.get(column)
+        pop = float(row.get("total_pop") or 0)
+        if value is None or pop <= 0:
+            continue
+        weighted += float(value) * pop
+        population += pop
+    if population == 0:
+        return None
+    return weighted / population
+
+
+def compare_plan_demographics(
+    rows: list[dict[str, Any]],
+    selected_geo_ids: list[str],
+    column: str = AUDIT_COLUMN,
+) -> dict[str, Any]:
+    """Compares a population-weighted mean on the selected tracts to the county.
+
+    `rows` are tract dicts with `geo_id`, `total_pop`, and `column`. Nulls and
+    non-positive populations are skipped. This does not call BigQuery.
+    """
+    selected_ids = {str(geo_id) for geo_id in selected_geo_ids}
+    selected_rows = [row for row in rows if str(row.get("geo_id")) in selected_ids]
+    selected_mean = _population_weighted_mean(selected_rows, column)
+    county_mean = _population_weighted_mean(rows, column)
+    if selected_mean is None or county_mean is None:
+        return {
+            "status": "error",
+            "column": column,
+            "selected_mean": None if selected_mean is None else round(selected_mean, 4),
+            "county_mean": None if county_mean is None else round(county_mean, 4),
+            "difference": None,
+            "error_message": (
+                "Not enough population with a non-null audit column to compare."
+            ),
+        }
+    return {
+        "status": "reviewed",
+        "column": column,
+        "selected_mean": round(selected_mean, 4),
+        "county_mean": round(county_mean, 4),
+        "difference": round(selected_mean - county_mean, 4),
+        "error_message": None,
+    }
+
+
+def _quote_geo_ids(geo_ids: list[str]) -> str:
+    quoted: list[str] = []
+    for geo_id in geo_ids:
+        text = str(geo_id)
+        if not text.isdigit():
+            raise ValueError(f"Census tract geo_id must be digits, got {geo_id!r}.")
+        quoted.append(f"'{text}'")
+    return ", ".join(quoted)
+
+
+def _bq_project_and_dataset() -> tuple[str, str]:
+    project = (
+        os.environ.get("GOOGLE_CLOUD_PROJECT")
+        or os.environ.get("GCP_PROJECT_ID")
+        or "qwiklabs-gcp-04-e3eaf2b4f0c3"
+    )
+    dataset = os.environ.get("BQ_DATASET", "a4i_health")
+    return project, dataset
+
+
+def _write_state(tool_context: ToolContext | None, key: str, value: dict[str, Any]) -> None:
+    if tool_context is not None and hasattr(tool_context, "state"):
+        tool_context.state[key] = value
+
+
+def audit_plan_tool(tool_context: ToolContext | None = None) -> dict[str, Any]:
+    """Compares the Saturday sites to the county on the SVI racial-ethnic theme.
+
+    Reads `session.state["plan_data"]` and queries `burden_tracts.svi_racial_ethnic`,
+    a column the planner ranking does not use. Stores the comparison in
+    `session.state["plan_status"]`. Does not change which tracts were selected.
+
+    Args:
+        tool_context: ADK ToolContext whose state holds `plan_data`.
+
+    Returns:
+        A dict with `status` (`reviewed` or `error`), `column`, `selected_mean`,
+        `county_mean`, `difference`, and `error_message`.
+    """
+    plan = {}
+    if tool_context is not None and hasattr(tool_context, "state"):
+        plan = tool_context.state.get("plan_data") or {}
+
+    selected = plan.get("selected_tracts") or []
+    geo_ids = [str(site.get("geo_id")) for site in selected if site.get("geo_id")]
+    if plan.get("status") != "success" or not geo_ids:
+        plan_status = {
+            "status": "error",
+            "column": AUDIT_COLUMN,
+            "selected_mean": None,
+            "county_mean": None,
+            "difference": None,
+            "error_message": "No successful plan_data to audit.",
+        }
+        _write_state(tool_context, "plan_status", plan_status)
+        return plan_status
+
+    from google.cloud import bigquery
+
+    project, dataset = _bq_project_and_dataset()
+    try:
+        sql = AUDIT_PLAN_SQL_TEMPLATE.format(
+            project=project,
+            dataset=dataset,
+            geo_id_array=_quote_geo_ids(geo_ids),
+        )
+        client = bigquery.Client(project=project)
+        rows = [dict(row.items()) for row in client.query(sql).result()]
+    except Exception as exc:
+        plan_status = {
+            "status": "error",
+            "column": AUDIT_COLUMN,
+            "selected_mean": None,
+            "county_mean": None,
+            "difference": None,
+            "error_message": f"Equity audit query failed: {exc}",
+        }
+        _write_state(tool_context, "plan_status", plan_status)
+        return plan_status
+
+    plan_status = compare_plan_demographics(rows, geo_ids)
+    _write_state(tool_context, "plan_status", plan_status)
+    return plan_status

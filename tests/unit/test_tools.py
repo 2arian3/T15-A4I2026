@@ -2,9 +2,12 @@
 
 import pytest
 
+from agent.schemas import SaturdaySite, SitingPlan
 from agent.tools import (
+    AUDIT_PLAN_SQL_TEMPLATE,
     SITING_RANKING_SQL_TEMPLATE,
     TABLE_RESOLUTIONS,
+    compare_plan_demographics,
     describe_table_resolution,
     haversine_km,
     select_four_saturday_tracts,
@@ -85,6 +88,37 @@ def test_siting_sql_does_not_use_race_or_ethnicity() -> None:
     assert "svi_racial_ethnic" not in sql_lower
     assert "race" not in sql_lower
     assert "nullif(b.svi_socioeconomic, -999)" in sql_lower
+
+
+def test_audit_sql_reads_the_column_planner_cannot() -> None:
+    assert "svi_racial_ethnic" in AUDIT_PLAN_SQL_TEMPLATE
+    assert "svi_racial_ethnic" not in SITING_RANKING_SQL_TEMPLATE.lower()
+
+
+def test_compare_plan_demographics_weights_by_population() -> None:
+    rows = [
+        {"geo_id": "1", "total_pop": 100, "svi_racial_ethnic": 0.2},
+        {"geo_id": "2", "total_pop": 300, "svi_racial_ethnic": 0.8},
+        {"geo_id": "3", "total_pop": 100, "svi_racial_ethnic": 0.4},
+    ]
+    result = compare_plan_demographics(rows, ["1", "3"])
+    assert result["status"] == "reviewed"
+    assert result["column"] == "svi_racial_ethnic"
+    assert result["selected_mean"] == 0.3
+    assert result["county_mean"] == 0.6
+    assert result["difference"] == -0.3
+    assert result["error_message"] is None
+
+
+def test_compare_plan_demographics_errors_without_selected_values() -> None:
+    rows = [
+        {"geo_id": "1", "total_pop": 100, "svi_racial_ethnic": None},
+        {"geo_id": "2", "total_pop": 100, "svi_racial_ethnic": 0.5},
+    ]
+    result = compare_plan_demographics(rows, ["1"])
+    assert result["status"] == "error"
+    assert result["difference"] is None
+    assert result["county_mean"] == 0.5
 
 
 def test_select_four_saturday_tracts_enforces_spatial_separation() -> None:
@@ -224,4 +258,95 @@ def test_select_four_saturday_tracts_enforces_spatial_separation() -> None:
     assert skipped[0]["geo_id"] == "13121007603"
     assert selected[0]["why_preferred_over_alternatives"]
     assert selected[0]["selection_reason"]
+    SaturdaySite.model_validate(selected[0])
     assert haversine_km(33.6815, -84.4962, 33.6880, -84.4929) < 3.0
+
+
+def _enriched_saturday_site() -> dict:
+    return {
+        "saturday_number": 1,
+        "geo_id": "13121007604",
+        "total_pop": 3191,
+        "latitude": 33.6815,
+        "longitude": -84.4962,
+        "need_rank": 1,
+        "scores": {
+            "static_need_score": 82.34,
+            "dynamic_surge_multiplier": 1.151,
+            "final_need_score": 94.79,
+        },
+        "supporting_metrics": {
+            "pct_uninsured": 19.8,
+            "pct_diabetes": 18.8,
+            "pct_asthma": 12.1,
+            "pct_high_bp": 44.3,
+            "pct_checkup": 77.7,
+            "pct_no_vehicle": 33.3,
+            "pct_mobility_difficulty": 22.8,
+            "svi_socioeconomic": 0.962,
+            "km_to_any_care": 3.06,
+            "km_to_safety_net": 4.6,
+            "extra_km_if_uninsured": 1.54,
+            "nearest_safety_net_name": "Clinic A",
+            "mean_pm": 9.31,
+            "surge_week": "2026-01-31",
+        },
+        "selection_reason": "Saturday #1 — Census Tract 13121007604",
+        "why_preferred_over_alternatives": "Selected as a distinct geographic anchor.",
+    }
+
+
+def test_enriched_tract_validates_as_saturday_site() -> None:
+    site = SaturdaySite.model_validate(_enriched_saturday_site())
+    assert site.saturday_number == 1
+    assert site.latitude == 33.6815
+    assert site.longitude == -84.4962
+    assert site.selection_reason.startswith("Saturday #1")
+
+
+def test_success_plan_keeps_map_fields() -> None:
+    payload = SitingPlan.model_validate(
+        {
+            "status": "success",
+            "project": "demo-project",
+            "dataset": "a4i_health",
+            "methodology": {
+                "weights": {
+                    "healthcare_needs": 0.35,
+                    "accessibility_barriers": 0.35,
+                    "transportation_and_mobility_barriers": 0.25,
+                    "environmental_pm25_context": 0.05,
+                },
+                "race_or_ethnicity_used_in_scoring": False,
+                "min_separation_km": 3.0,
+            },
+            "selected_tracts": [_enriched_saturday_site()],
+            "limitations": [
+                {
+                    "table": "burden_tracts",
+                    "grain": "census tract",
+                    "limitation": "CDC PLACES values are modeled prevalence.",
+                }
+            ],
+        }
+    ).model_dump()
+
+    tract = payload["selected_tracts"][0]
+    assert payload["status"] == "success"
+    assert tract["latitude"] == 33.6815
+    assert tract["longitude"] == -84.4962
+    assert tract["saturday_number"] == 1
+    assert tract["selection_reason"].startswith("Saturday #1")
+
+
+def test_error_plan_has_empty_tracts() -> None:
+    payload = SitingPlan.model_validate(
+        {
+            "status": "error",
+            "error_message": "BigQuery siting query failed: boom",
+        }
+    ).model_dump()
+
+    assert payload["status"] == "error"
+    assert payload["error_message"] == "BigQuery siting query failed: boom"
+    assert payload["selected_tracts"] == []
