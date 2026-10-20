@@ -1,40 +1,50 @@
-# Fulton GA leaflet prototype
+# Curbside — Fulton County Leaflet Frontend
 
-This front-end shows a left-side Leaflet map of Fulton County, Atlanta, plus a right-side summary card and chat panel for the hosted agent.
+This frontend renders an interactive Leaflet map of Fulton County, GA (with the 67 safety-net hospitals & FQHCs and census tract centroids) alongside a Saturday stop selector and chat panel backed by the deployed Curbside Vertex AI Agent Runtime.
 
-## Run locally
+## Run locally (single server: UI + Agent proxy)
 
-From the repo root:
+From the repository root:
 
 ```bash
-cd frontend
-python -m http.server 8001
+make frontend
 ```
 
-Then open `http://localhost:8001`.
+Then open `http://127.0.0.1:8002`.
 
-## Agent integration
+`agent/proxy_server.py` serves the static UI from `frontend/` at `/` and proxies `POST /agent` to the active Reasoning Engine resource recorded in `deployment_metadata.json` (`:streamQuery`), authenticating via Application Default Credentials (or `gcloud auth print-access-token` fallback).
 
-The page expects a hosted Google Cloud agent endpoint in `window.AGENT_ENGINE_URL`.
+## Deploy to Google Cloud Run
 
-Example:
+From the repository root:
 
-```html
-<script>
-  window.AGENT_ENGINE_URL = "https://your-agent-endpoint-url";
-</script>
+```bash
+make deploy-frontend
 ```
 
-The agent should return JSON shaped like:
+This deploys the `curbside-ui` Cloud Run service in `us-central1` attached to `curbside-agent@qwiklabs-gcp-04-e3eaf2b4f0c3.iam.gserviceaccount.com`, pointing `REASONING_ENGINE_URL` at the production Reasoning Engine in `deployment_metadata.json`.
+
+## Response contract (`POST /agent`)
+
+`agent/proxy_server.py` returns JSON compatible with both single-point and 4-Saturday siting responses:
 
 ```json
 {
   "lat": 33.7528,
   "lng": -84.3947,
-  "radius_km": 12,
-  "label": "Recommended next Saturday site",
-  "summary": "High-need service area near Atlanta"
+  "summary": "Plain-language summary or outreach flyer",
+  "sites": [
+    {
+      "saturday_number": 1,
+      "geo_id": "13121007603",
+      "lat": 33.7528,
+      "lng": -84.3947,
+      "selection_reason": "Why this census tract was selected for Saturday #1"
+    }
+  ],
+  "audit": {
+    "passed": true,
+    "svi_Guardrail_Triggered": false
+  }
 }
 ```
-
-If the endpoint is unavailable, the page falls back to a Fulton GA default location so the UI keeps working during development.
