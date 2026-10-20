@@ -128,6 +128,10 @@ const chatInput = document.getElementById("chatInput");
 const dateSelector = document.getElementById("dateSelector");
 
 let activeMarker = null;
+let saturdayMarkersLayer = null;
+let saturdayMarkers = [];
+let saturdaySites = [];
+let selectedSaturdayIndex = 0;
 let facilityLayerGroup = null;
 
 function getNextSaturdayDate() {
@@ -155,6 +159,37 @@ function formatSaturdayLabel(date) {
   })}`;
 }
 
+function selectSaturdayStop(index) {
+  const dates = getUpcomingSaturdays();
+  const date = dates[index] || dates[0];
+  selectedSaturdayIndex = index;
+
+  if (dateSelector) {
+    const options = dateSelector.querySelectorAll(".date-option");
+    options.forEach((option, idx) => {
+      option.classList.toggle("is-active", idx === index);
+    });
+  }
+
+  if (siteTitle && date) {
+    siteTitle.textContent = formatSaturdayLabel(date);
+  }
+
+  const site = saturdaySites[index];
+  if (site && Number.isFinite(site.lat) && Number.isFinite(site.lng)) {
+    siteLocation.textContent = site.geo_id
+      ? `Tract ${site.geo_id} — Fulton GA`
+      : "Fulton GA (Atlanta)";
+    siteCoords.textContent = `${site.lat.toFixed(4)}, ${site.lng.toFixed(4)}`;
+
+    const marker = saturdayMarkers[index];
+    if (marker) {
+      marker.openPopup();
+    }
+    map.flyTo([site.lat, site.lng], 12, { duration: 1.2 });
+  }
+}
+
 function renderDateSelector() {
   if (!dateSelector) return;
 
@@ -164,7 +199,7 @@ function renderDateSelector() {
   dates.forEach((date, index) => {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `date-option${index === 0 ? " is-active" : ""}`;
+    button.className = `date-option${index === selectedSaturdayIndex ? " is-active" : ""}`;
     button.setAttribute("aria-label", formatSaturdayLabel(date));
     button.innerHTML = `
       <span class="date-dot"></span>
@@ -175,10 +210,7 @@ function renderDateSelector() {
     `;
 
     button.addEventListener("click", () => {
-      const options = dateSelector.querySelectorAll(".date-option");
-      options.forEach((option) => option.classList.remove("is-active"));
-      button.classList.add("is-active");
-      siteTitle.textContent = formatSaturdayLabel(date);
+      selectSaturdayStop(index);
     });
 
     dateSelector.appendChild(button);
@@ -202,9 +234,13 @@ function addMessage(role, text) {
 }
 
 function updateSummary(plan) {
-  if (siteTitle) siteTitle.textContent = plan.label;
-  siteLocation.textContent = "Fulton GA (Atlanta)";
-  siteCoords.textContent = `${plan.lat.toFixed(4)}, ${plan.lng.toFixed(4)}`;
+  if (siteTitle && plan.label) siteTitle.textContent = plan.label;
+  siteLocation.textContent = plan.geo_id
+    ? `Tract ${plan.geo_id} — Fulton GA`
+    : "Fulton GA (Atlanta)";
+  if (Number.isFinite(plan.lat) && Number.isFinite(plan.lng)) {
+    siteCoords.textContent = `${plan.lat.toFixed(4)}, ${plan.lng.toFixed(4)}`;
+  }
 }
 
 function clearHighlight() {
@@ -212,6 +248,11 @@ function clearHighlight() {
     map.removeLayer(activeMarker);
     activeMarker = null;
   }
+  if (saturdayMarkersLayer) {
+    map.removeLayer(saturdayMarkersLayer);
+    saturdayMarkersLayer = null;
+  }
+  saturdayMarkers = [];
 }
 
 function renderFacilityMarkers() {
@@ -261,9 +302,48 @@ function renderFacilityMarkers() {
 
 
 function renderPlan(plan) {
+  if (!Number.isFinite(plan.lat) || !Number.isFinite(plan.lng)) {
+    return;
+  }
+
   clearHighlight();
+  const dates = getUpcomingSaturdays();
+
+  if (Array.isArray(plan.sites) && plan.sites.length > 0) {
+    saturdaySites = plan.sites;
+    saturdayMarkersLayer = L.layerGroup().addTo(map);
+
+    plan.sites.forEach((site, idx) => {
+      if (!Number.isFinite(site.lat) || !Number.isFinite(site.lng)) return;
+      const dateLabel = dates[idx] ? formatSaturdayLabel(dates[idx]) : `Saturday #${idx + 1}`;
+      const tractLabel = site.geo_id ? ` (Tract ${site.geo_id})` : "";
+      const marker = L.marker([site.lat, site.lng], {
+        title: `${dateLabel}${tractLabel}`
+      }).addTo(saturdayMarkersLayer);
+
+      marker.bindPopup(
+        `<strong>${dateLabel}${tractLabel}</strong><br>${site.selection_reason || plan.summary}`
+      );
+      marker.on("click", () => {
+        selectSaturdayStop(idx);
+      });
+      saturdayMarkers[idx] = marker;
+    });
+
+    selectSaturdayStop(0);
+    return;
+  }
 
   const point = [plan.lat, plan.lng];
+  saturdaySites = [
+    {
+      saturday_number: 1,
+      geo_id: plan.geo_id || "",
+      lat: plan.lat,
+      lng: plan.lng,
+      selection_reason: plan.summary
+    }
+  ];
 
   activeMarker = L.marker(point, {
     title: plan.label
@@ -271,6 +351,7 @@ function renderPlan(plan) {
 
   activeMarker.bindPopup(`<strong>${plan.label}</strong><br>${plan.summary}`);
   activeMarker.openPopup();
+  saturdayMarkers[0] = activeMarker;
 
   map.flyTo(point, 11, { duration: 1.4 });
   updateSummary(plan);
@@ -288,17 +369,66 @@ function normalizeAgentResult(payload) {
   for (const candidate of candidates) {
     if (!candidate || typeof candidate !== "object") continue;
 
-    const lat = Number(candidate.lat ?? candidate.latitude ?? candidate.location?.lat ?? candidate.location?.latitude);
-    const lng = Number(candidate.lng ?? candidate.longitude ?? candidate.location?.lng ?? candidate.location?.longitude);
+    const rawSites = Array.isArray(candidate.sites)
+      ? candidate.sites
+      : Array.isArray(candidate.selected_tracts)
+        ? candidate.selected_tracts
+        : [];
+
+    const sites = rawSites
+      .map((s, idx) => ({
+        saturday_number: Number(s.saturday_number || idx + 1),
+        geo_id: s.geo_id || "",
+        lat: Number(s.lat ?? s.latitude),
+        lng: Number(s.lng ?? s.longitude),
+        selection_reason: s.selection_reason || s.summary || ""
+      }))
+      .filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lng));
+
+    const firstSite = sites[0];
+    const lat = Number(
+      candidate.lat ??
+      candidate.latitude ??
+      candidate.location?.lat ??
+      candidate.location?.latitude ??
+      firstSite?.lat
+    );
+    const lng = Number(
+      candidate.lng ??
+      candidate.longitude ??
+      candidate.location?.lng ??
+      candidate.location?.longitude ??
+      firstSite?.lng
+    );
     const radius = Number(candidate.radius_km ?? candidate.radius ?? candidate.areaRadiusKm);
+    const summary =
+      candidate.summary ||
+      candidate.flyer ||
+      candidate.message ||
+      firstSite?.selection_reason ||
+      "Next Saturday outreach site recommended by the agent.";
 
     if (Number.isFinite(lat) && Number.isFinite(lng)) {
       return {
-        label: candidate.week || "Recommended next Saturday site",
+        label: candidate.week || getNextSaturdayLabel(),
+        geo_id: firstSite?.geo_id || candidate.geo_id || "",
         lat,
         lng,
+        sites,
         radius_km: Number.isFinite(radius) ? radius : null,
-        summary: candidate.summary || candidate.message || "Next Saturday outreach site recommended by the agent."
+        summary
+      };
+    }
+
+    if (typeof candidate.summary === "string" && candidate.summary.trim()) {
+      return {
+        label: getNextSaturdayLabel(),
+        geo_id: "",
+        lat: NaN,
+        lng: NaN,
+        sites: [],
+        radius_km: null,
+        summary: candidate.summary.trim()
       };
     }
   }
@@ -306,7 +436,20 @@ function normalizeAgentResult(payload) {
   return null;
 }
 
-window.AGENT_ENGINE_URL = window.AGENT_ENGINE_URL || "http://localhost:8002/agent";
+function getDefaultAgentEngineUrl() {
+  if (typeof window !== "undefined" && window.location) {
+    const { protocol, hostname, port } = window.location;
+    if ((protocol === "http:" || protocol === "https:") && port !== "8001") {
+      return "/agent";
+    }
+    if (hostname === "localhost" || hostname === "127.0.0.1") {
+      return "http://localhost:8002/agent";
+    }
+  }
+  return "/agent";
+}
+
+window.AGENT_ENGINE_URL = window.AGENT_ENGINE_URL || getDefaultAgentEngineUrl();
 
 async function callAgentEngine(payload) {
   const endpoint = window.AGENT_ENGINE_URL || "";
@@ -331,10 +474,20 @@ async function callAgentEngine(payload) {
   const result = await response.json();
   const plan = normalizeAgentResult(result);
   if (!plan) {
-    throw new Error("Agent response was missing latitude/longitude metadata.");
+    throw new Error("Agent response could not be parsed.");
   }
 
   return plan;
+}
+
+function formatBotReply(plan) {
+  if (Number.isFinite(plan.lat) && Number.isFinite(plan.lng)) {
+    const stopCount = Array.isArray(plan.sites) && plan.sites.length > 1
+      ? ` (${plan.sites.length} Saturday stops plotted)`
+      : "";
+    return `${plan.summary}\n\nHighlighted stop at ${plan.lat.toFixed(4)}, ${plan.lng.toFixed(4)}${stopCount}.`;
+  }
+  return plan.summary;
 }
 
 async function sendInitialPlannerPrompt() {
@@ -349,7 +502,7 @@ async function sendInitialPlannerPrompt() {
     });
 
     renderPlan(plan);
-    addMessage("bot", `${plan.summary} I highlighted the recommended site at ${plan.lat.toFixed(4)}, ${plan.lng.toFixed(4)}.`);
+    addMessage("bot", formatBotReply(plan));
   } catch (error) {
     addMessage("bot", `The agent could not respond right now. ${error.message}`);
   }
@@ -373,7 +526,7 @@ chatForm.addEventListener("submit", async (event) => {
     });
 
     renderPlan(plan);
-    addMessage("bot", `${plan.summary} I highlighted the recommended site at ${plan.lat.toFixed(4)}, ${plan.lng.toFixed(4)}.`);
+    addMessage("bot", formatBotReply(plan));
   } catch (error) {
     addMessage("bot", `The agent could not respond right now. ${error.message}`);
   }

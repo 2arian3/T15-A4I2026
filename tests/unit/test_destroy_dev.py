@@ -130,9 +130,7 @@ def test_cli_defaults_to_sandbox_metadata(monkeypatch) -> None:
 
     monkeypatch.setattr(destroy_dev, "destroy_dev", fake_destroy_dev)
     monkeypatch.setattr(destroy_dev, "default_sandbox_name", lambda: "curbside-dev-501")
-    code = destroy_dev.main(
-        ["--project", PROJECT, "--region", REGION, "--yes"]
-    )
+    code = destroy_dev.main(["--project", PROJECT, "--region", REGION, "--yes"])
     assert code == 0
     assert seen["display_name"] == "curbside-dev-501"
     assert seen["metadata_path"] == Path("deployment_metadata.dev.json")
