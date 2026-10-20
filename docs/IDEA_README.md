@@ -18,22 +18,62 @@ What it does **not** do: treat anyone, use individual data, chat with residents 
 
 ## How it works
 ```
-evidence (plain code) -> Planner -> Equity Auditor -> approval gate
-                           ^______ revise (max 2-3 rounds) ____|
-                                         |
-                              [outreach lead approves]
-                                         |
-                              Explainer -> Reviewer -> flyer
+Outreach lead: "Plan next month's stops for Fulton"
+        |
+        v
+[1] EVIDENCE (plain code)            writes: burden_findings, access_findings, context_findings
+        |
+        v
+  +---> [2] PLANNER (LLM + tools)    reads: evidence, audit_report (if revising)
+  |         |                        writes: plan_data, plan_summary
+  |         v
+  |     [3] EQUITY AUDITOR (LLM + audit tool)   reads: plan_data + demographics
+  |         |                        writes: audit_data, audit_report, approved
+  |         v
+  |     [4] APPROVAL GATE (plain code)          reads: approved
+  |         |-- REVISE (max 2-3 rounds) --------+
+  |         |
+  +---------+-- APPROVE
+        |
+        v
+[5] HUMAN APPROVAL                   outreach lead approves or edits; edits are re-audited
+        |
+        v
+  +---> [6] EXPLAINER (LLM)          reads: approved plan only
+  |         |                        writes: flyer (EN, ES, text message)
+  |         v
+  |     [7] REVIEWER (LLM)           reads: flyer + plan text
+  |         |                        writes: review_report
+  +---------+-- REJECT (max 1-2 rounds)
+        |
+        v
+CLINIC PLAN: calendar + what we couldn't tell you + audit numbers + flyer
 ```
 
-| Step | What happens | Why |
-|---|---|---|
-| Evidence | Plain Python queries tract need, access gap and context. No model call. | Facts should not depend on a model's mood. |
-| Planner (LLM) | Picks four Saturday stops with a coverage tool, and writes the calendar with each number tagged by scale. | Needs judgment to turn a ranked list into a plan. |
-| Equity Auditor (LLM + tool) | The only agent that sees demographics the planner was forbidden to use. Reports the numbers verbatim and flags stops too close together or tied. | Removing race as an input does not remove bias. Auditing the output does. |
-| Approval gate (plain code) | Ends the loop only when the audit approves. | Model text cannot override the audit. |
-| Explainer (LLM) | Writes the flyer in English and Spanish, plus a text message, from the approved plan only. | Residents need plain language, not hedging. |
-| Reviewer (LLM) | Rejects flyer or plan claims that cross data scales or sound like medical advice. | Its instructions (hedge, cite, refuse) conflict with the Explainer's on purpose. |
+| # | Step | Type | What it does | Fails safe by |
+|---|---|---|---|---|
+| 1 | Evidence | Plain code | Queries tract need, access gap and context. No model call. | Missing data is reported as "cannot tell," never as zero |
+| 2 | Planner | LLM + `build_clinic_plan` tool | Picks four Saturday stops with a coverage tool and writes the calendar, each number tagged by scale | The tool does the math, so the model cannot invent stops |
+| 3 | Equity Auditor | LLM + audit tool | The only agent that sees demographics the planner was forbidden to use. Flags stops too close together or tied, and reports numbers verbatim | Cannot change the verdict the tool returned |
+| 4 | Approval gate | Plain code | Ends the loop only when the audit approves | Model text cannot override the audit |
+| 5 | Human approval | Person | The outreach lead approves or edits the plan | Her edits go back through the audit |
+| 6 | Explainer | LLM | Writes the flyer in English and Spanish, plus a text message, from the approved plan only | Sees only the approved plan; leaves `[CONFIRM]` for unverified service claims |
+| 7 | Reviewer | LLM | Rejects claims that cross data scales or sound like medical advice | Its "hedge, cite, refuse" prompt conflicts with the Explainer's on purpose |
+
+If a loop reaches its round limit, the system stops and hands the decision to a person. It does not pick a winner.
+
+### Why no chat agent for residents
+The challenge rules say an agent talking to a patient is the wrong thing to build, and an agent answering health questions would drift into medical advice. The flyer lists a human contact instead (marked `[CONFIRM]` until the county supplies it).
+
+### Optional last stage: a coordinator for the outreach lead
+After the core works, a thin coordinator at the top could route "plan next month" to the workflow above and route follow-ups ("why not the tract next to stop 2?", "what if I move stop 2?") to an answer step. It would answer only from saved state (`plan_data`, `audit_data`), have no new data access, and refuse anything outside it. It adds a routing step and more that can go wrong, so it is built last, and only if the plan and audit are solid.
+
+### Build order (each stage works on its own)
+1. Evidence, Planner, Equity Auditor and gate.
+2. Explainer.
+3. Reviewer on the flyer.
+4. Human approval step.
+5. Coordinator (optional).
 
 ## What she gets back (the Clinic Plan)
 - **Where the van goes, and why:** four Saturdays, each with a named tract, people covered, and two or three numbers.
