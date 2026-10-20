@@ -65,7 +65,9 @@ def granted_roles(output: str, verb: str) -> set[str]:
     }
 
 
-@pytest.mark.parametrize("script", ["setup_sa.sh", "destroy_sa.sh", "with_cli_metadata.sh"])
+@pytest.mark.parametrize(
+    "script", ["setup_sa.sh", "destroy_sa.sh", "with_cli_metadata.sh"]
+)
 def test_scripts_parse(script: str) -> None:
     subprocess.run(["bash", "-n", str(SCRIPTS / script)], check=True)
 
@@ -224,6 +226,7 @@ def test_make_help_lists_every_documented_target() -> None:
         "test",
         "deploy",
         "deploy-dev",
+        "deploy-frontend",
         "destroy",
         "destroy-dev",
         "destroy-sa",
@@ -231,6 +234,7 @@ def test_make_help_lists_every_documented_target() -> None:
         "dev",
         "web",
         "serve",
+        "frontend",
     ):
         assert target in listed, target
 
@@ -287,3 +291,26 @@ def test_make_serve_runs_the_deployed_app_locally() -> None:
     assert "agent.fast_api_app:app" in line
     assert "--env-file .env" in line
     assert "--reload" in line
+
+
+@needs_make
+def test_make_frontend_runs_proxy_server_locally() -> None:
+    out = make_n("frontend")
+    line = next(line for line in out.splitlines() if "uvicorn" in line)
+    assert "agent.proxy_server:app" in line
+    assert "--port 8002" in line
+
+
+@needs_make
+def test_make_deploy_frontend_deploys_to_cloud_run_with_sa() -> None:
+    out = make_n("deploy-frontend")
+    lines = out.splitlines()
+    test_idx = next(i for i, line in enumerate(lines) if "pytest tests/unit" in line)
+    deploy = next(line for line in lines if "gcloud run deploy" in line)
+    assert test_idx < lines.index(deploy)
+    assert "curbside-ui" in deploy
+    assert f"--project {PROJECT}" in deploy
+    assert "--region us-central1" in deploy
+    assert f"--service-account {SA_EMAIL}" in deploy
+    assert "agent.proxy_server:app" in deploy
+    assert ":streamQuery" in deploy

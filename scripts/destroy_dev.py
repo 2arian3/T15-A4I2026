@@ -28,7 +28,9 @@ SANDBOX_PREFIX = "curbside-dev"
 
 def is_sandbox_name(display_name: str) -> bool:
     """True for `curbside-dev` and `curbside-dev-<suffix>`."""
-    return display_name == SANDBOX_PREFIX or display_name.startswith(f"{SANDBOX_PREFIX}-")
+    return display_name == SANDBOX_PREFIX or display_name.startswith(
+        f"{SANDBOX_PREFIX}-"
+    )
 
 
 def default_sandbox_name() -> str:
@@ -51,9 +53,7 @@ def refuse_reason(display_name: str, metadata_path: Path) -> str | None:
     sandbox_id = destroy_agent.read_metadata_id(metadata_path)
     prod_id = destroy_agent.read_metadata_id(PROD_METADATA)
     if sandbox_id and prod_id and sandbox_id == prod_id:
-        return (
-            f"Refusing: {metadata_path} points at the production agent {prod_id}."
-        )
+        return f"Refusing: {metadata_path} points at the production agent {prod_id}."
     return None
 
 

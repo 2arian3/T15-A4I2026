@@ -23,7 +23,9 @@ APIS=(
   iamcredentials.googleapis.com
   cloudresourcemanager.googleapis.com
   serviceusage.googleapis.com
-  cloudbuild.googleapis.com          # Agent Runtime builds the container image
+  cloudbuild.googleapis.com          # Agent Runtime & Cloud Run build the container image
+  run.googleapis.com                 # Cloud Run hosts the Curbside Leaflet frontend
+  artifactregistry.googleapis.com    # Container registry for Cloud Run source deploys
   storage.googleapis.com
   logging.googleapis.com
   monitoring.googleapis.com

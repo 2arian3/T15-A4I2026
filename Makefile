@@ -16,9 +16,11 @@ DATASET        ?= a4i_health
 SA_EMAIL       := $(SA_NAME)@$(PROJECT_ID).iam.gserviceaccount.com
 Q              ?= Hello! What can you help me with, and what can't you tell me about a single neighborhood?
 CONFIRM        ?=
-# Local web server (make web / make serve)
+# Local web server (make web / make serve / make frontend)
 HOST           ?= 127.0.0.1
 PORT           ?= 8000
+FRONTEND_NAME  ?= curbside-ui
+FRONTEND_PORT  ?= 8002
 
 # Production Agent Runtime (shared). Sandbox is a separate engine so a personal
 # deploy cannot overwrite curbside. Override the suffix with DEV_ID=...
@@ -32,8 +34,8 @@ DEV_AGENT_ID    = $(shell python3 -c "import json;print(json.load(open('$(DEV_ME
 SA_ENV := PROJECT_ID=$(PROJECT_ID) SA_NAME=$(SA_NAME) DATASET=$(DATASET)
 
 .DEFAULT_GOAL := help
-.PHONY: help install env check auth setup setup-dry-run dev web serve run test test-integration \
-        lint deploy deploy-dry-run status list test-remote destroy destroy-sa destroy-all \
+.PHONY: help install env check auth setup setup-dry-run dev web serve frontend run test test-integration \
+        lint deploy deploy-dry-run deploy-frontend deploy-frontend-dry-run status list test-remote destroy destroy-sa destroy-all \
         deploy-dev deploy-dev-dry-run status-dev test-remote-dev destroy-dev
 
 help: ## Show this help
@@ -98,6 +100,10 @@ serve: ## Run the same server Agent Engine runs, locally, with auto-reload
 	@echo "Server: http://$(HOST):$(PORT)  (dev UI at /dev-ui/, Ctrl+C to stop)"
 	uv run --env-file .env uvicorn agent.fast_api_app:app --host $(HOST) --port $(PORT) --reload
 
+frontend: ## Run the Leaflet frontend + Agent Engine proxy locally (default 127.0.0.1:8002)
+	@echo "Curbside UI: http://$(HOST):$(FRONTEND_PORT)  (Ctrl+C to stop)"
+	uv run uvicorn agent.proxy_server:app --host $(HOST) --port $(FRONTEND_PORT) --reload
+
 run: ## Ask the local agent one question: make run Q="..."
 	agents-cli run "$(Q)"
 
@@ -149,6 +155,28 @@ test-remote: ## Ask production curbside one question: make test-remote Q="..."
 test-remote-dev: ## Ask sandbox curbside-dev one question: make test-remote-dev Q="..."
 	@test -n "$(DEV_AGENT_ID)" || { echo "No sandbox agent in $(DEV_METADATA); run make deploy-dev"; exit 1; }
 	agents-cli run --url https://$(REGION)-aiplatform.googleapis.com/v1/$(DEV_AGENT_ID) --mode adk "$(Q)"
+
+# --- Deploy Frontend to Cloud Run -----------------------------------------
+
+FRONTEND_ENGINE_URL = https://$(REGION)-aiplatform.googleapis.com/v1/$(AGENT_ID):streamQuery
+FRONTEND_DEPLOY_CMD = gcloud run deploy $(FRONTEND_NAME) \
+	--source . \
+	--project $(PROJECT_ID) \
+	--region $(REGION) \
+	--service-account $(SA_EMAIL) \
+	--allow-unauthenticated \
+	--quiet \
+	--command uv \
+	--args "run,uvicorn,agent.proxy_server:app,--host,0.0.0.0,--port,8080" \
+	--set-env-vars "REASONING_ENGINE_URL=$(FRONTEND_ENGINE_URL),GOOGLE_CLOUD_PROJECT=$(PROJECT_ID),REGION=$(REGION)"
+
+deploy-frontend: test ## Deploy the Leaflet frontend + proxy to Cloud Run
+	@test -n "$(AGENT_ID)" || { echo "No deployed agent in $(METADATA); run make deploy"; exit 1; }
+	gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com --project $(PROJECT_ID)
+	$(FRONTEND_DEPLOY_CMD)
+
+deploy-frontend-dry-run: ## Print the Cloud Run frontend deploy command without running it
+	@echo $(FRONTEND_DEPLOY_CMD)
 
 # --- Tear down -------------------------------------------------------------
 
