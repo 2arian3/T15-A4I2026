@@ -22,8 +22,6 @@ WORKDIR /code
 COPY ./pyproject.toml ./README.md ./uv.lock* ./
 
 COPY ./agent ./agent
-COPY ./frontend ./frontend
-COPY ./deployment_metadata.json* ./
 
 RUN uv sync --frozen
 

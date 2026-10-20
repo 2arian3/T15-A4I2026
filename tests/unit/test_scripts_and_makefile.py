@@ -309,8 +309,8 @@ def test_make_deploy_frontend_deploys_to_cloud_run_with_sa() -> None:
     deploy = next(line for line in lines if "gcloud run deploy" in line)
     assert test_idx < lines.index(deploy)
     assert "curbside-ui" in deploy
+    assert "--source .frontend-build" in deploy
     assert f"--project {PROJECT}" in deploy
     assert "--region us-central1" in deploy
     assert f"--service-account {SA_EMAIL}" in deploy
-    assert "agent.proxy_server:app" in deploy
     assert ":streamQuery" in deploy
