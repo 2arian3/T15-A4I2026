@@ -1,98 +1,160 @@
+"""HTTP proxy and static UI server for the Curbside Leaflet frontend.
+
+Serves the static frontend from ``frontend/`` at ``/`` and forwards ``POST /agent``
+requests to the deployed Vertex AI Agent Runtime (``:streamQuery``) using
+Application Default Credentials (Cloud Run service account or local ADC), with a
+local ``gcloud auth print-access-token`` fallback.
+"""
+
+from __future__ import annotations
+
+import csv
 import json
+import mimetypes
 import os
+import re
 import shutil
 import subprocess
-import time
+import urllib.error
+import urllib.request
+from functools import lru_cache
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
-# #region agent log
-_DEBUG_LOG = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    ".cursor",
-    "debug-199fba.log",
+try:
+    import requests
+except ImportError:  # pragma: no cover
+    requests = None  # type: ignore[assignment]
+
+try:
+    from google.auth import default as google_auth_default
+    from google.auth.transport.requests import Request as GoogleAuthRequest
+except ImportError:  # pragma: no cover
+    google_auth_default = None  # type: ignore[assignment]
+    GoogleAuthRequest = None  # type: ignore[assignment]
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+FRONTEND_DIR = REPO_ROOT / "frontend"
+METADATA_PATH = REPO_ROOT / "deployment_metadata.json"
+TRACTS_CSV_PATH = FRONTEND_DIR / "fulton_tracts.csv"
+
+FALLBACK_REASONING_ENGINE_ID = (
+    "projects/1001206471385/locations/us-central1/reasoningEngines/3799547422611341312"
 )
 
-
-def _debug_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    try:
-        os.makedirs(os.path.dirname(_DEBUG_LOG), exist_ok=True)
-        line = json.dumps(
-            {
-                "sessionId": "199fba",
-                "hypothesisId": hypothesis_id,
-                "location": location,
-                "message": message,
-                "data": data,
-                "timestamp": int(time.time() * 1000),
-            }
-        )
-        with open(_DEBUG_LOG, "a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-    except Exception:
-        pass
-# #endregion
-
-import requests
-from flask import Flask, jsonify, request
-from google.auth import default
-from google.auth.transport.requests import Request
-
-app = Flask(__name__)
-
-DEFAULT_REASONING_ENGINE_URL = (
-    "https://us-central1-aiplatform.googleapis.com/v1/projects/"
-    "qwiklabs-gcp-04-e3eaf2b4f0c3/locations/us-central1/"
-    "reasoningEngines/1906839310464712704:query"
-)
-
-REASONING_ENGINE_URL = os.environ.get(
-    "REASONING_ENGINE_URL",
-    DEFAULT_REASONING_ENGINE_URL,
-)
-STUDENT_ACCOUNT = "student-04-236122435814@qwiklabs.net"
-
-# Avoid stale ADC files from a personal account if they are not valid for this project.
-if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") and not os.path.exists(os.environ["GOOGLE_APPLICATION_CREDENTIALS"]):
+# Avoid stale ADC files from a personal account if the file path no longer exists.
+if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") and not os.path.exists(
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
+):
     os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
 
 
-@app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    return response
+def normalize_reasoning_engine_url(url: str) -> str:
+    """Ensure a Reasoning Engine URL or resource name targets ``:streamQuery``."""
+    cleaned = url.strip()
+    if not cleaned:
+        cleaned = FALLBACK_REASONING_ENGINE_ID
+
+    if cleaned.startswith("projects/"):
+        match = re.search(r"locations/([^/]+)/", cleaned)
+        region = match.group(1) if match else os.environ.get("REGION", "us-central1")
+        cleaned = f"https://{region}-aiplatform.googleapis.com/v1/{cleaned}"
+
+    if cleaned.endswith(":query"):
+        return cleaned[: -len(":query")] + ":streamQuery"
+    if not cleaned.endswith(":streamQuery"):
+        return cleaned.rstrip("/") + ":streamQuery"
+    return cleaned
+
+
+def resolve_reasoning_engine_url(metadata_path: Path = METADATA_PATH) -> str:
+    """Resolve the active Reasoning Engine URL from env or deployment_metadata.json."""
+    env_url = os.environ.get("REASONING_ENGINE_URL", "").strip()
+    if env_url:
+        return normalize_reasoning_engine_url(env_url)
+
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            resource_id = metadata.get("remote_agent_runtime_id", "").strip()
+            if resource_id:
+                return normalize_reasoning_engine_url(resource_id)
+        except (OSError, ValueError):
+            pass
+
+    return normalize_reasoning_engine_url(FALLBACK_REASONING_ENGINE_ID)
+
+
+REASONING_ENGINE_URL = resolve_reasoning_engine_url()
+
+
+@lru_cache(maxsize=1)
+def load_tract_coordinates(
+    csv_path: Path = TRACTS_CSV_PATH,
+) -> dict[str, tuple[float, float]]:
+    """Load Fulton County census tract (latitude, longitude) by 11-digit geo_id."""
+    coords: dict[str, tuple[float, float]] = {}
+    if not csv_path.is_file():
+        return coords
+    try:
+        with csv_path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                geo_id = (row.get("geo_id") or "").strip()
+                try:
+                    lat = float(row.get("latitude") or "")
+                    lng = float(row.get("longitude") or "")
+                except ValueError:
+                    continue
+                if geo_id:
+                    coords[geo_id] = (lat, lng)
+    except OSError:
+        return {}
+    return coords
 
 
 def get_google_access_token() -> str:
-    executable = shutil.which("gcloud") or shutil.which("gcloud.cmd") or r"C:\Users\Nirmal\AppData\Local\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
+    """Obtain an OAuth2 access token via ADC first, then gcloud CLI fallback."""
+    if google_auth_default is not None and GoogleAuthRequest is not None:
+        try:
+            credentials, _ = google_auth_default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            credentials.refresh(GoogleAuthRequest())
+            if credentials.token:
+                return str(credentials.token)
+        except Exception:
+            pass
 
-    try:
-        token = subprocess.check_output(
-            [executable, "auth", "print-access-token", "--account", STUDENT_ACCOUNT],
-            stderr=subprocess.STDOUT,
-            text=True,
-            shell=False,
-        ).strip()
-        if token:
-            return token
-    except Exception:
-        pass
+    executable = shutil.which("gcloud") or shutil.which("gcloud.cmd")
+    if executable:
+        cmd = [executable, "auth", "print-access-token"]
+        account = os.environ.get("GCLOUD_ACCOUNT", "").strip()
+        if account:
+            cmd.extend(["--account", account])
+        try:
+            token = subprocess.check_output(
+                cmd,
+                stderr=subprocess.STDOUT,
+                text=True,
+                shell=False,
+                timeout=15,
+            ).strip()
+            if token:
+                return token
+        except Exception:
+            pass
 
-    try:
-        credentials, _ = default()
-        credentials.refresh(Request())
-        if credentials.token:
-            return credentials.token
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "Could not obtain a Google access token using the Qwiklabs account. Run 'gcloud auth login' and 'gcloud config set account student-04-236122435814@qwiklabs.net'."
-        ) from exc
-
-    raise RuntimeError("No Google access token was available for the Reasoning Engine call.")
+    raise RuntimeError(
+        "Could not obtain a Google Cloud access token. "
+        "On Cloud Run, ensure the service account is attached; "
+        "locally, run 'make auth' or 'gcloud auth application-default login'."
+    )
 
 
 def walk_values(value: Any, key_names: set[str]):
+    """Yield values for any matching key name in nested dicts/lists."""
     if isinstance(value, dict):
         for key, child in value.items():
             if key in key_names:
@@ -103,7 +165,138 @@ def walk_values(value: Any, key_names: set[str]):
             yield from walk_values(item, key_names)
 
 
-def extract_lat_lng(data: Any):
+def parse_agent_response_text(raw_text: str) -> Any:
+    """Parse either a single JSON document or newline-delimited JSON events."""
+    stripped = raw_text.strip()
+    if not stripped:
+        raise ValueError("Empty response from Reasoning Engine.")
+
+    try:
+        return json.loads(stripped)
+    except ValueError:
+        pass
+
+    events: list[Any] = []
+    for line in stripped.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        events.append(json.loads(line))
+
+    if not events:
+        raise ValueError("No valid JSON events found in Reasoning Engine stream.")
+    return events
+
+
+def _try_parse_json_dict(text: str) -> dict[str, Any] | None:
+    """Parse a JSON object from a string (including fenced ```json blocks)."""
+    candidate = text.strip()
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```(?:json)?\s*", "", candidate)
+        candidate = re.sub(r"\s*```$", "", candidate)
+    if not (candidate.startswith("{") and candidate.endswith("}")):
+        return None
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, dict) else None
+    except ValueError:
+        return None
+
+
+def _normalize_site(
+    raw_site: dict[str, Any],
+    index: int,
+    tract_coords: dict[str, tuple[float, float]],
+) -> dict[str, Any] | None:
+    """Normalize a single Saturday stop dict with lat/lng lookup fallback."""
+    geo_id = str(raw_site.get("geo_id") or "").strip()
+    lat_raw = raw_site.get("latitude", raw_site.get("lat"))
+    lng_raw = raw_site.get("longitude", raw_site.get("lng"))
+
+    lat: float | None = None
+    lng: float | None = None
+    try:
+        if lat_raw is not None and lng_raw is not None:
+            lat = float(lat_raw)
+            lng = float(lng_raw)
+    except (TypeError, ValueError):
+        lat = None
+        lng = None
+
+    if (lat is None or lng is None) and geo_id in tract_coords:
+        lat, lng = tract_coords[geo_id]
+
+    if lat is None or lng is None:
+        return None
+
+    saturday_num = raw_site.get("saturday_number") or (index + 1)
+    try:
+        saturday_num = int(saturday_num)
+    except (TypeError, ValueError):
+        saturday_num = index + 1
+
+    default_reason = (
+        f"Recommended Saturday #{saturday_num} mobile clinic site "
+        f"(Tract {geo_id or 'Fulton'})."
+    )
+    reason = str(
+        raw_site.get("selection_reason") or raw_site.get("summary") or default_reason
+    ).strip()
+
+    return {
+        "saturday_number": saturday_num,
+        "geo_id": geo_id,
+        "lat": lat,
+        "lng": lng,
+        "latitude": lat,
+        "longitude": lng,
+        "selection_reason": reason,
+        "nearest_site_name": raw_site.get("nearest_site_name"),
+        "nearest_care_km": raw_site.get("nearest_care_km"),
+        "composite_score": raw_site.get("composite_score"),
+    }
+
+
+def extract_sites(data: Any) -> list[dict[str, Any]]:
+    """Extract up to 4 Saturday stops from tool responses, state_delta, or JSON text."""
+    tract_coords = load_tract_coordinates()
+    raw_tracts: list[dict[str, Any]] = []
+
+    for candidate in walk_values(data, {"selected_tracts", "sites"}):
+        if isinstance(candidate, list) and candidate:
+            dict_items = [item for item in candidate if isinstance(item, dict)]
+            if dict_items:
+                raw_tracts = dict_items
+                break
+
+    if not raw_tracts:
+        for text_candidate in walk_values(data, {"plan_data", "text"}):
+            if isinstance(text_candidate, str):
+                parsed = _try_parse_json_dict(text_candidate)
+                if parsed and isinstance(parsed.get("selected_tracts"), list):
+                    raw_tracts = [
+                        item
+                        for item in parsed["selected_tracts"]
+                        if isinstance(item, dict)
+                    ]
+                    if raw_tracts:
+                        break
+
+    sites: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw_tracts):
+        normalized = _normalize_site(item, idx, tract_coords)
+        if normalized is not None:
+            sites.append(normalized)
+
+    return sites
+
+
+def extract_lat_lng(data: Any) -> tuple[float | None, float | None]:
+    """Extract the primary (lat, lng) pair from structured fields or tract IDs."""
+    sites = extract_sites(data)
+    if sites:
+        return sites[0]["lat"], sites[0]["lng"]
+
     lat_values = list(walk_values(data, {"lat", "latitude"}))
     lng_values = list(walk_values(data, {"lng", "longitude"}))
 
@@ -127,89 +320,110 @@ def extract_lat_lng(data: Any):
     return lat, lng
 
 
-def coordinates_from_response(data: Any) -> tuple[float, float, str]:
-    """Read the pin from plan_data. A failed plan raises its error_message."""
-    plans = [
-        plan for plan in walk_values(data, {"plan_data"}) if isinstance(plan, dict)
-    ]
-    # #region agent log
-    _debug_log(
-        "B",
-        "proxy_server.py:coordinates_from_response",
-        "plan_data found in engine output",
-        {
-            "plan_count": len(plans),
-            "statuses": [plan.get("status") for plan in plans],
-            "tract_counts": [
-                len(plan.get("selected_tracts") or [])
-                if isinstance(plan.get("selected_tracts"), list)
-                else None
-                for plan in plans
-            ],
-            "error_prefixes": [
-                str(plan.get("error_message") or "")[:180] for plan in plans
-            ],
-        },
-    )
-    # #endregion
-    for plan in plans:
-        tracts = plan.get("selected_tracts") or []
-        if not isinstance(tracts, list):
-            continue
-        for tract in tracts:
-            if not isinstance(tract, dict):
-                continue
-            try:
-                lat = float(tract["latitude"])
-                lng = float(tract["longitude"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            summary = tract.get("selection_reason") or extract_summary(data)
-            return lat, lng, str(summary)
-    for plan in plans:
-        if plan.get("status") == "error":
-            raise RuntimeError(str(plan.get("error_message") or "Siting plan failed."))
-    lat, lng = extract_lat_lng(data)
-    if lat is None or lng is None:
-        raise RuntimeError(
-            "The agent response did not include usable latitude/longitude values. "
-            f"Raw payload: {json.dumps(data)[:1200]}"
-        )
-    return lat, lng, extract_summary(data)
-
-
 def extract_summary(data: Any) -> str:
-    for key in ("summary", "message", "text", "output", "response"):
+    """Extract the most relevant human-readable response text from ADK events."""
+    if isinstance(data, list):
+        model_texts: list[str] = []
+        flyer_text: str | None = None
+        for event in data:
+            if not isinstance(event, dict):
+                continue
+            state_delta = event.get("actions", {}).get("state_delta", {})
+            if isinstance(state_delta, dict):
+                flyer = state_delta.get("flyer")
+                if isinstance(flyer, str) and flyer.strip():
+                    flyer_text = flyer.strip()
+
+            content = event.get("content")
+            if not isinstance(content, dict):
+                continue
+            for part in content.get("parts") or []:
+                if not isinstance(part, dict) or part.get("thought"):
+                    continue
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    if _try_parse_json_dict(text) is None:
+                        model_texts.append(text.strip())
+
+        if flyer_text:
+            return flyer_text
+        if model_texts:
+            return "\n\n".join(model_texts)
+
+    for key in (
+        "flyer",
+        "summary",
+        "selection_reason",
+        "message",
+        "text",
+        "output",
+        "response",
+    ):
         for value in walk_values(data, {key}):
             if isinstance(value, str) and value.strip():
-                return value.strip()
+                if _try_parse_json_dict(value) is None:
+                    return value.strip()
             if isinstance(value, dict):
                 text = value.get("text")
                 if isinstance(text, str) and text.strip():
                     return text.strip()
-    if isinstance(data, str):
+    if isinstance(data, str) and data.strip():
         return data.strip()
     return "Agent response received."
 
 
-def call_reasoning_engine(prompt: str, user_id: str = "frontend-demo"):
-    # #region agent log
-    _debug_log(
-        "C",
-        "proxy_server.py:call_reasoning_engine",
-        "requesting access token",
-        {"user_id": user_id, "prompt_len": len(prompt)},
+def extract_audit(data: Any) -> dict[str, Any] | None:
+    """Extract the equity audit status dictionary if present in the agent events."""
+    for value in walk_values(data, {"plan_status", "audit"}):
+        if isinstance(value, dict) and (
+            "passed" in value or "svi_Guardrail_Triggered" in value
+        ):
+            return value
+        if isinstance(value, str):
+            parsed = _try_parse_json_dict(value)
+            if parsed:
+                return parsed
+    return None
+
+
+def _post_json(
+    url: str, headers: dict[str, str], payload: dict[str, Any]
+) -> tuple[int, str]:
+    """Send an HTTP POST with JSON payload using requests or urllib fallback."""
+    if requests is not None:
+        resp = requests.post(url, headers=headers, json=payload, timeout=120)
+        return resp.status_code, resp.text
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
     )
-    # #endregion
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return resp.status, resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return exc.code, body
+
+
+def plan_failure_message(data: Any) -> str | None:
+    """Return plan_data.error_message when the siting plan failed."""
+    for plan in walk_values(data, {"plan_data"}):
+        if isinstance(plan, str):
+            parsed = _try_parse_json_dict(plan)
+            plan = parsed if isinstance(parsed, dict) else None
+        if isinstance(plan, dict) and plan.get("status") == "error":
+            return str(plan.get("error_message") or "Siting plan failed.")
+    return None
+
+
+def call_reasoning_engine(prompt: str, user_id: str = "web_user") -> dict[str, Any]:
+    """Query the deployed ADK Reasoning Engine and normalize the response for the UI."""
     token = get_google_access_token()
-    # #region agent log
-    _debug_log(
-        "C",
-        "proxy_server.py:call_reasoning_engine",
-        "access token acquired",
-        {"token_present": bool(token)},
-    )
-    # #endregion
+    target_url = resolve_reasoning_engine_url()
+
     payload = {
         "class_method": "async_stream_query",
         "input": {
@@ -218,61 +432,93 @@ def call_reasoning_engine(prompt: str, user_id: str = "frontend-demo"):
         },
     }
 
-    response = requests.post(
-        REASONING_ENGINE_URL,
+    status_code, response_text = _post_json(
+        target_url,
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },
-        json=payload,
-        timeout=120,
+        payload=payload,
     )
-    # #region agent log
-    _debug_log(
-        "A",
-        "proxy_server.py:call_reasoning_engine",
-        "reasoning engine responded",
-        {
-            "status": response.status_code,
-            "bytes": len(response.content),
-            "engine": REASONING_ENGINE_URL.rsplit("/", 1)[-1],
-        },
-    )
-    # #endregion
 
-    if response.status_code >= 400:
+    if status_code >= 400:
         try:
-            error_body = response.json()
+            error_body = json.loads(response_text)
         except ValueError:
-            error_body = {"raw": response.text}
+            error_body = {"raw": response_text}
         raise RuntimeError(
-            json.dumps({
-                "status": response.status_code,
-                "message": "Reasoning Engine call failed.",
-                "details": error_body,
-            })
+            json.dumps(
+                {
+                    "status": status_code,
+                    "message": "Reasoning Engine call failed.",
+                    "details": error_body,
+                }
+            )
         )
 
     try:
-        data = response.json()
+        data = parse_agent_response_text(response_text)
     except ValueError as exc:
-        raise RuntimeError(f"Agent response was not valid JSON: {response.text[:500]}") from exc
+        raise RuntimeError(
+            f"Agent response was not valid JSON: {response_text[:500]}"
+        ) from exc
 
-    lat, lng, summary = coordinates_from_response(data)
+    sites = extract_sites(data)
+    summary = extract_summary(data)
+    lat, lng = extract_lat_lng(data)
+
+    if not sites and (lat is None or lng is None):
+        failure = plan_failure_message(data)
+        if failure:
+            raise RuntimeError(failure)
+
+    if lat is None or lng is None:
+        tract_coords = load_tract_coordinates()
+        mentioned_tracts = re.findall(r"\b(13121\d{6})\b", summary)
+        for idx, geo_id in enumerate(dict.fromkeys(mentioned_tracts)):
+            if geo_id in tract_coords:
+                t_lat, t_lng = tract_coords[geo_id]
+                if lat is None or lng is None:
+                    lat, lng = t_lat, t_lng
+                if len(sites) < 4:
+                    sites.append(
+                        {
+                            "saturday_number": idx + 1,
+                            "geo_id": geo_id,
+                            "lat": t_lat,
+                            "lng": t_lng,
+                            "latitude": t_lat,
+                            "longitude": t_lng,
+                            "selection_reason": (
+                                f"Census tract {geo_id} referenced by Curbside."
+                            ),
+                        }
+                    )
+
+    if lat is None or lng is None:
+        matches = re.findall(r"(-?\d+\.\d+)", summary)
+        if len(matches) >= 2:
+            try:
+                lat = float(matches[-2])
+                lng = float(matches[-1])
+            except ValueError:
+                lat = None
+                lng = None
+
     return {
         "lat": lat,
         "lng": lng,
         "summary": summary,
+        "sites": sites,
+        "audit": extract_audit(data),
         "raw": data,
     }
 
 
-@app.route("/agent", methods=["POST", "OPTIONS"])
-def agent_proxy():
-    if request.method == "OPTIONS":
-        return "", 204
-
-    data = request.get_json(silent=True) or {}
+def extract_prompt_from_body(data: Any) -> str:
+    """Extract the user prompt string from a request JSON dict."""
+    if not isinstance(data, dict):
+        return ""
     prompt = (
         data.get("request")
         or data.get("message")
@@ -280,42 +526,182 @@ def agent_proxy():
         or data.get("query")
         or ""
     )
-    if not prompt:
+    if not str(prompt).strip():
         new_message = data.get("new_message")
         parts = new_message.get("parts") if isinstance(new_message, dict) else None
         if isinstance(parts, list):
             prompt = "".join(
-                part.get("text", "")
-                for part in parts
-                if isinstance(part, dict)
+                part.get("text", "") for part in parts if isinstance(part, dict)
             )
+    return str(prompt).strip()
 
-    if not prompt or not str(prompt).strip():
-        return jsonify({"error": "Missing request prompt."}), 400
 
-    user_id = str(data.get("user_id") or "frontend-demo")
-    # #region agent log
-    _debug_log(
-        "E",
-        "proxy_server.py:agent_proxy",
-        "accepted /agent body",
-        {"keys": sorted(data.keys()), "user_id": user_id, "prompt_len": len(str(prompt))},
+def extract_user_id(data: Any) -> str:
+    """Read user_id from the request body, defaulting to the web demo user."""
+    if isinstance(data, dict) and data.get("user_id"):
+        return str(data["user_id"])
+    return "web_user"
+
+
+def resolve_static_asset(asset_path: str) -> Path | None:
+    """Resolve a path inside ``frontend/`` safely against directory traversal."""
+    rel = asset_path.lstrip("/") or "index.html"
+    candidate = (FRONTEND_DIR / rel).resolve()
+    if not candidate.is_relative_to(FRONTEND_DIR.resolve()) or not candidate.is_file():
+        return None
+    return candidate
+
+
+try:
+    from fastapi import FastAPI
+    from fastapi import Request as FastAPIRequest
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import FileResponse, JSONResponse, Response
+
+    app = FastAPI(
+        title="curbside-ui",
+        description="Curbside Leaflet UI and Vertex AI Agent Runtime proxy",
     )
-    # #endregion
-    try:
-        result = call_reasoning_engine(str(prompt).strip(), user_id=user_id)
-        return jsonify(result)
-    except Exception as exc:  # pragma: no cover
-        # #region agent log
-        _debug_log(
-            "D",
-            "proxy_server.py:agent_proxy",
-            "proxy returning 500",
-            {"exc_type": type(exc).__name__, "exc": str(exc)[:500]},
-        )
-        # #endregion
-        return jsonify({"error": str(exc)}), 500
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
+    )
+
+    @app.get("/healthz")
+    def healthz() -> dict[str, str]:
+        """Health check endpoint for Cloud Run and local checks."""
+        return {
+            "status": "ok",
+            "reasoning_engine_url": resolve_reasoning_engine_url(),
+        }
+
+    @app.options("/agent")
+    def agent_options() -> Response:
+        """CORS preflight handler for /agent."""
+        return Response(status_code=204)
+
+    @app.post("/agent")
+    async def agent_proxy(request: FastAPIRequest) -> JSONResponse:
+        """Forward a user prompt from the Leaflet UI to Vertex AI Agent Runtime."""
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+
+        prompt = extract_prompt_from_body(data)
+        if not prompt:
+            return JSONResponse({"error": "Missing request prompt."}, status_code=400)
+
+        try:
+            result = call_reasoning_engine(prompt, user_id=extract_user_id(data))
+            return JSONResponse(result)
+        except Exception as exc:  # pragma: no cover
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.get("/")
+    def serve_index() -> Response:
+        """Serve the Leaflet frontend index.html at the root path."""
+        target = resolve_static_asset("index.html")
+        if target is None:
+            return JSONResponse(
+                {"error": "Frontend index.html not found."}, status_code=404
+            )
+        return FileResponse(target)
+
+    @app.get("/{asset_path:path}")
+    def serve_frontend_asset(asset_path: str) -> Response:
+        """Serve static assets (JS, CSS, CSV) from the frontend directory."""
+        target = resolve_static_asset(asset_path)
+        if target is None:
+            return JSONResponse({"error": "Not found."}, status_code=404)
+        return FileResponse(target)
+
+except ImportError:  # pragma: no cover
+    app = None  # type: ignore[assignment]
 
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8002")), debug=False)
+class _StdlibProxyHandler(BaseHTTPRequestHandler):  # pragma: no cover
+    """Fallback HTTP handler when FastAPI/uvicorn are not installed locally."""
+
+    def _send_cors(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+    def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self._send_cors()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self._send_cors()
+        self.end_headers()
+
+    def do_GET(self) -> None:
+        path = self.path.split("?", 1)[0]
+        if path == "/healthz":
+            self._send_json(
+                {
+                    "status": "ok",
+                    "reasoning_engine_url": resolve_reasoning_engine_url(),
+                }
+            )
+            return
+
+        target = resolve_static_asset(path)
+        if target is None:
+            self._send_json({"error": "Not found."}, status=404)
+            return
+
+        content = target.read_bytes()
+        mime_type, _ = mimetypes.guess_type(str(target))
+        self.send_response(200)
+        self._send_cors()
+        self.send_header("Content-Type", mime_type or "application/octet-stream")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def do_POST(self) -> None:
+        path = self.path.split("?", 1)[0]
+        if path != "/agent":
+            self._send_json({"error": "Not found."}, status=404)
+            return
+
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(length).decode("utf-8", errors="replace")
+        try:
+            data = json.loads(raw) if raw else {}
+        except ValueError:
+            data = {}
+
+        prompt = extract_prompt_from_body(data)
+        if not prompt:
+            self._send_json({"error": "Missing request prompt."}, status=400)
+            return
+
+        try:
+            result = call_reasoning_engine(prompt, user_id=extract_user_id(data))
+            self._send_json(result, status=200)
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, status=500)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    port = int(os.environ.get("PORT", "8002"))
+    if app is not None:
+        import uvicorn
+
+        uvicorn.run(app, host="0.0.0.0", port=port)
+    else:
+        server = ThreadingHTTPServer(("0.0.0.0", port), _StdlibProxyHandler)
+        print(f"Serving Curbside UI at http://0.0.0.0:{port}")
+        server.serve_forever()
