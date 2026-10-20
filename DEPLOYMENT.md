@@ -11,7 +11,8 @@ driven from the `Makefile`; run `make help` for the full list.
 | Agent Runtime region | `us-central1` (Agent Runtime has no `global` location) | `REGION=` |
 | Gemini location | `global` | `MODEL_LOCATION=` |
 | Model | `gemini-3.6-flash` | `MODEL=` |
-| Agent name | `curbside` | `AGENT_NAME=` |
+| Agent name (production) | `curbside` | `AGENT_NAME=` |
+| Agent name (sandbox) | `curbside-dev-<uid>` | `DEV_ID=` / `DEV_AGENT_NAME=` |
 | Service account | `curbside-agent@<project>.iam.gserviceaccount.com` | `SA_NAME=` |
 
 ## First time
@@ -35,19 +36,28 @@ make web                      # ADK web UI at http://127.0.0.1:8000/dev-ui/
 make web PORT=8080 HOST=0.0.0.0   # e.g. in Cloud Shell, then Web Preview
 make serve                    # the server Agent Engine runs, locally, auto-reload
 make dev                      # agents-cli playground (same UI, via agents-cli)
-make deploy                   # unit tests, then create/update the agent (5-10 min)
-make status                   # if the deploy timed out locally, it is still running
-make test-remote Q="Hello"    # ask the deployed agent
+make deploy                   # production curbside (5-10 min)
+make test-remote Q="Hello"    # ask production
+make deploy-dev               # personal sandbox curbside-dev-<your uid>
+make test-remote-dev Q="Hello"
+make status / make status-dev # if a deploy timed out locally, it is still running
 ```
 
-`make deploy` records the deployed agent's id in `deployment_metadata.json`. Commit it so
+`make deploy` records the production agent's id in `deployment_metadata.json`. Commit it so
 teammates update the same agent instead of creating a second one.
+
+`make deploy-dev` writes `deployment_metadata.dev.json` (gitignored) and restores the
+production metadata afterwards, so a sandbox deploy cannot overwrite `curbside`.
+Reuse the same sandbox on the next `make deploy-dev`; pass `DEV_ID=123` to pick a
+different suffix.
 
 ## Tear down
 
 ```bash
-make destroy                  # deletes the agent (asks you to type its name)
+make destroy                  # deletes production curbside (asks you to type its name)
 make destroy CONFIRM=yes      # no prompt
+make destroy-dev              # deletes sandbox curbside-dev-<uid> only
+make destroy-dev CONFIRM=yes  # same, no prompt
 make destroy-sa               # removes the service account and its role grants
 make destroy-all              # both, agent first
 ```
