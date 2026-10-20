@@ -42,9 +42,9 @@ Outreach lead: "Plan next month's stops for Fulton"
   +---> [6] EXPLAINER (LLM)          reads: approved plan only
   |         |                        writes: flyer (EN, ES, text message)
   |         v
-  |     [7] REVIEWER (LLM)           reads: flyer + plan text
-  |         |                        writes: review_report
-  +---------+-- REJECT (max 1-2 rounds)
+  |     [7] FLYER CHECKS (plain code) reads: flyer
+  |         |                        writes: flyer_check (banned claims, reading level)
+  +---------+-- FAIL (explainer rewrites, max 2 rounds)
         |
         v
 CLINIC PLAN: calendar + what we couldn't tell you + audit numbers + flyer
@@ -58,7 +58,9 @@ CLINIC PLAN: calendar + what we couldn't tell you + audit numbers + flyer
 | 4 | Approval gate | Plain code | Ends the loop only when the audit approves | Model text cannot override the audit |
 | 5 | Human approval | Person | The outreach lead approves or edits the plan | Her edits go back through the audit |
 | 6 | Explainer | LLM | Writes the flyer in English and a second language (to be confirmed from Fulton language data), plus a text message and a script for a community health worker, from the approved plan only | Sees only the approved plan; leaves `[CONFIRM]` for unverified service claims |
-| 7 | Reviewer | LLM | Rejects claims that cross data scales or sound like medical advice | Its "hedge, cite, refuse" prompt conflicts with the Explainer's on purpose |
+| 7 | Flyer checks | Plain code | Scans the flyer for banned phrases (medical advice, claims that cross data scales such as "rising in this neighborhood") and measures the reading level (Flesch-Kincaid) | Cheap, cannot hallucinate, and the reading level is measured, not claimed |
+
+**Three agents, not four.** The Planner, Equity Auditor and Explainer each produce one Clinic Plan part. A separate Reviewer agent was dropped: deleting it would rarely make the answer visibly worse, so its job became plain-code checks. The challenge's "two agents whose instructions conflict" test is met by the Auditor (hedge, cite, report verbatim) versus the Explainer (plain, no hedging).
 
 If a loop reaches its round limit, the system stops and hands the decision to a person. It does not pick a winner.
 
@@ -71,7 +73,7 @@ After the core works, a thin coordinator at the top could route "plan next month
 ### Build order (each stage works on its own)
 1. Evidence, Planner, Equity Auditor and gate.
 2. Explainer.
-3. Reviewer on the flyer.
+3. Flyer checks (plain code).
 4. Human approval step.
 5. Coordinator (optional).
 
@@ -83,9 +85,9 @@ Four parts, shown in the demo as four panels, not as a document.
 | Where the van goes, and why | Planner | Four Saturdays, ranked, each with a named tract, people covered, and two or three numbers |
 | What we could not tell you | Limits list (plain code) | Named and counted: tracts with no health estimate, shortage areas (0 live, 99 proposed for withdrawal), which claims are tract, 12 km grid, facility point or multi-county region, which distances are upper bounds. This is a finding, not a disclaimer. |
 | Who this plan lands on | Equity Auditor | The audit numbers, reported whether or not they are comfortable |
-| The thing we hand to the neighborhood | Explainer (checked by the Reviewer) | A flyer, a text message and a community health worker script, in plain language |
+| The thing we hand to the neighborhood | Explainer (checked by plain-code flyer checks) | A flyer, a text message and a community health worker script, in plain language |
 
-The Reviewer is a safety layer on the fourth part, not a fifth deliverable. In the audit panel, show the planner's draft and the auditor's objection side by side.
+The flyer checks are a safety layer on the fourth part, not a fifth deliverable. In the audit panel, show the planner's draft and the auditor's objection side by side.
 
 ## Data we use (all public, from the challenge's `a4i_health` dataset)
 `burden_tracts` (health burden, insurance, vehicles), `tract_access` (distance to care), `care_sites` (clinic points and hours), `care_sites_state` (border check), `exposure_tracts` (air quality, context only), `disease_weekly` (regional context only). We do **not** rank on air quality (12 km grid) or claim neighborhood disease trends (regional data). Fulton has no live shortage areas (all 99 are proposed for withdrawal), which we report as a finding.
@@ -102,7 +104,7 @@ The Reviewer is a safety layer on the fourth part, not a fifth deliverable. In t
 | 4 Gate | Audit verdict only | All tables |
 | 5 Outreach lead | Plan, audit results, limits list | Individual-level data |
 | 6 Explainer | Approved plan only. Optional: `pct_limited_english` to decide if a second language is needed | Raw tables, race and ethnicity, medical advice |
-| 7 Reviewer | Flyer, plan text, limits list | New data |
+| 7 Flyer checks (code) | Flyer text and the limits list | New data |
 
 ## Guardrails
 - No personal or individual-level data, and no agent talking to patients.

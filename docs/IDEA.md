@@ -5,7 +5,7 @@
 > Our agent helps the Fulton County outreach lead decide where to park one mobile clinic on four Saturdays, and the thing it knows that a spreadsheet does not is **which of its own claims hold at tract scale and which do not**, because a second agent that never saw the planner's reasoning audits every plan.
 
 ## The one-paragraph idea
-A planner agent picks four Saturday stops from measured need and access data, with no race input. An independent equity auditor then checks that plan against demographics the planner never saw. A reviewer rejects any claim that crosses data scales. The planner revises until the deterministic audit approves or the loop ends. Only the approved plan reaches the explainer, which writes a plain-language English and Spanish flyer. Every number carries the scale it came from.
+A planner agent picks four Saturday stops from measured need and access data, with no race input. An independent equity auditor then checks that plan against demographics the planner never saw. The planner revises until the deterministic audit approves or the loop ends. Only the approved plan reaches the explainer, which writes a plain-language English and Spanish flyer. Every number carries the scale it came from.
 
 ---
 
@@ -43,19 +43,20 @@ A planner agent picks four Saturday stops from measured need and access data, wi
 - The need-matched baseline separates "the skew is explained by need" (disclose it) from "a proxy may be at work" (revise).
 - **Caveat:** the fairness literature notes that imputing protected class from proxies can distort disparity estimates. We use actual tract-level data, so we avoid imputation. **Source:** the CDC/ATSDR SVI 2022 tract layer (`EP_MINRTY` plus `EP_AFAM`, `EP_HISP`, `EP_ASIAN` and others, with margins of error), the same service the challenge notebook uses. Field names were confirmed in the layer's metadata; the pull is not yet written. Audit by group as well as in aggregate, because one minority share can hide a skew against a single group.
 
-### 6. Reviewer: an independent critic with a conflicting prompt
-**Choice:** A reviewer whose whole prompt is "hedge, cite, refuse." It rejects scale-crossing claims.
+### 6. Why the auditor is a separate agent, and why there is no Reviewer agent
+**Choice:** The independent critic is the Equity Auditor itself. A separate Reviewer agent was dropped.
 **Why:**
 - A model critiquing its own output in the same context tends to defend it. The evidence is indirect: Huang et al. (2023) found models often struggle to self-correct without external feedback, and Stechly et al. (2024) found independent external verification can significantly improve reasoning accuracy. I did not find a head-to-head test of same-context versus separate critic.
-- SycEval (Stanford, 2025) reported sycophantic behavior in 58.19% of cases across three major models, which is the failure the separate critic is meant to catch.
+- SycEval (Stanford, 2025) reported sycophantic behavior in 58.19% of cases across three major models, which is the failure a separate critic is meant to catch.
 - A non-LLM approval gate decides when the loop stops, so model text cannot override the audit.
+- **Why no Reviewer:** the judges' test is "delete one agent, does the answer get worse?" Deleting a Reviewer would rarely make the answer visibly worse. Its job (reject medical-advice wording and claims that cross data scales) is done by plain-code flyer checks, which cannot hallucinate.
 
 ### 7. Explainer: plain language, no hedging
 **Choice:** A separate agent for the resident-facing materials: a flyer in English and a second language, a text message, and a script for a community health worker (the Clinic Plan brief lists all three). The second language is not assumed to be Spanish; `pct_limited_english` shows where non-English materials are needed but not which language, so confirm it from Fulton language data or label it an assumption.
 **Why:**
 - Health materials are often written above the 10th-grade level (CHCS). A 6th-to-8th-grade target is widely cited but comes from secondary reporting, so verify it on cdc.gov before putting it on a slide.
-- Its instructions directly contradict the reviewer's, which is the "two agents with conflicting prompts" judges look for.
-- **Add:** a Flesch-Kincaid check tool so the reading level is measured, not claimed.
+- Its instructions directly contradict the auditor's (plain and no hedging versus hedge, cite, report verbatim), which is the "two agents with conflicting prompts" judges look for.
+- **Plain-code flyer checks** run after it: banned phrases and a Flesch-Kincaid reading-level measurement, so the level is measured, not claimed. A failed check sends the flyer back to the explainer.
 
 ### 8. Honest limits are part of the product
 The Clinic Plan brief says "what we could not tell you" must be named, counted and not hidden, and is a finding, not a disclaimer. So the evidence step (plain code) builds a counted limits list into state, instead of leaving limits as tags on individual claims. It counts, for example, tracts with no health estimate, shortage areas (0 live, 99 proposed for withdrawal), and claims by scale.
@@ -75,14 +76,16 @@ The Clinic Plan brief says "what we could not tell you" must be named, counted a
 | equity auditor (LLM + tool) | plan + demographics | planner's reasoning | `audit_data`, `audit_report` | adversarial, report-verbatim |
 | approval gate (plain code) | `approved` flag | n/a | loop escalate | deterministic |
 | explainer (LLM) | approved plan only | raw data | `flyer` | warm, plain, no hedging |
-| reviewer (LLM) | flyer + plan text | n/a | `review_report` | hedge, cite, refuse |
+| flyer checks (plain code, not an agent) | flyer | n/a | `flyer_check` | deterministic |
 
-**Build order (each stage works on its own):** 1) evidence + planner + auditor + gate, 2) explainer, 3) reviewer on the flyer, 4) human approval step. Stop after any stage and you still have a working demo.
+**Three agents:** planner, equity auditor, explainer. Delete test: no planner means no plan; no auditor means clustered or tied stops ship unchecked and the audit panel disappears; no explainer means no flyer (and if the planner wrote it, you get hedged flyers).
+
+**Build order (each stage works on its own):** 1) evidence + planner + auditor + gate, 2) explainer, 3) flyer checks, 4) human approval step. Stop after any stage and you still have a working demo.
 
 ## The four judge questions
 1. **Delete one agent:** drop the auditor and a plan with clustered or tied stops goes out unchecked (show before and after).
 2. **State key written then read:** `plan_data` is written by the planner and read by the auditor.
-3. **Conflicting prompts:** the reviewer ("hedge") versus the explainer ("no hedging").
+3. **Conflicting prompts:** the auditor ("hedge, cite, report verbatim") versus the explainer ("plain, no hedging").
 4. **Rejected its own first answer:** `plan_v1` fails the audit, then `plan_v2` passes. **Not yet shown live:** on mock data the first plan passes, so we need a real Fulton run that triggers a revision.
 
 ## Open items to verify
