@@ -21,29 +21,32 @@ What it does **not** do: treat anyone, use individual data, chat with residents 
 Outreach lead: "Plan next month's stops for Fulton"
         |
         v
-[1] EVIDENCE (plain code)            writes: burden_findings, access_findings, context_findings
+[1] EVIDENCE (plain code)            writes: evidence_brief, limits_ledger, limits_brief
         |
         v
-  +---> [2] PLANNER (LLM + tools)    reads: evidence, audit_report (if revising)
+  +---> [2] PLANNER (LLM + tool)     reads: evidence_brief, limits_brief, audit_report (if revising)
   |         |                        writes: plan_data, plan_summary
   |         v
   |     [3] EQUITY AUDITOR (LLM + audit tool)   reads: plan_data + demographics
   |         |                        writes: audit_data, audit_report, approved
   |         v
   |     [4] APPROVAL GATE (plain code)          reads: approved
-  |         |-- REVISE (max 2-3 rounds) --------+
+  |         |-- REVISE (max 3 rounds) ----------+
   |         |
   +---------+-- APPROVE
         |
         v
-[5] HUMAN APPROVAL                   outreach lead approves or edits; edits are re-audited
+     plan_status (plain code)        writes: APPROVED, or NEEDS_HUMAN_DECISION (no flyer is written)
         |
         v
-  +---> [6] EXPLAINER (LLM)          reads: approved plan only
-  |         |                        writes: flyer (EN, ES, text message)
+[5] HUMAN APPROVAL                   outreach lead approves or edits; edits are re-audited (not built yet)
+        |
+        v
+  +---> [6] EXPLAINER (LLM)          reads: plan_summary, plan_status, flyer_check (if rewriting)
+  |         |                        writes: flyer (English, second language, text message, health worker script)
   |         v
   |     [7] FLYER CHECKS (plain code) reads: flyer
-  |         |                        writes: flyer_check (banned claims, reading level)
+  |         |                        writes: flyer_check, flyer_ok (banned claims, reading level)
   +---------+-- FAIL (explainer rewrites, max 2 rounds)
         |
         v
@@ -55,8 +58,8 @@ CLINIC PLAN: calendar + what we couldn't tell you + audit numbers + flyer
 | 1 | Evidence | Plain code | Queries tract need, access gap and context, and builds the counted limits list (what we could not tell you). No model call. | Missing data is reported as "cannot tell," never as zero |
 | 2 | Planner | LLM + `build_clinic_plan` tool | Picks four Saturday stops with a coverage tool and writes the calendar, each number tagged by scale | The tool does the math, so the model cannot invent stops |
 | 3 | Equity Auditor | LLM + audit tool | The only agent that sees demographics the planner was forbidden to use. Flags stops too close together or tied, and reports numbers verbatim | Cannot change the verdict the tool returned |
-| 4 | Approval gate | Plain code | Ends the loop only when the audit approves | Model text cannot override the audit |
-| 5 | Human approval | Person | The outreach lead approves or edits the plan | Her edits go back through the audit |
+| 4 | Approval gate | Plain code | Ends the loop only when the audit approves. If the rounds run out unapproved, the plan status becomes NEEDS_HUMAN_DECISION and no flyer is written | Model text cannot override the audit |
+| 5 | Human approval | Person (not built yet) | The outreach lead approves or edits the plan | Her edits go back through the audit |
 | 6 | Explainer | LLM | Writes the flyer in English and a second language (to be confirmed from Fulton language data), plus a text message and a script for a community health worker, from the approved plan only | Sees only the approved plan; leaves `[CONFIRM]` for unverified service claims |
 | 7 | Flyer checks | Plain code | Scans the flyer for banned phrases (medical advice, claims that cross data scales such as "rising in this neighborhood") and measures the reading level (Flesch-Kincaid) | Cheap, cannot hallucinate, and the reading level is measured, not claimed |
 
@@ -92,7 +95,7 @@ The flyer checks are a safety layer on the fourth part, not a fifth deliverable.
 ## Data we use (all public, from the challenge's `a4i_health` dataset)
 `burden_tracts` (health burden, insurance, vehicles), `tract_access` (distance to care), `care_sites` (clinic points and hours), `care_sites_state` (border check), `exposure_tracts` (air quality, context only), `disease_weekly` (regional context only). We do **not** rank on air quality (12 km grid) or claim neighborhood disease trends (regional data). Fulton has no live shortage areas (all 99 are proposed for withdrawal), which we report as a finding.
 
-**Auditor data (not in those tables).** The auditor uses the CDC/ATSDR Social Vulnerability Index 2022 tract layer, the same service the challenge notebook already uses. It has `EP_MINRTY` (percent minority) and a breakdown by group (`EP_AFAM`, `EP_HISP`, `EP_ASIAN` and others), each with a margin of error, on the same tract key. The field names were confirmed in the layer's metadata; the pull itself is not yet written. It is loaded into a separate dataset that only the auditor's tool can read. We audit by group as well as in aggregate.
+**Auditor data (not in those tables).** The auditor uses the CDC/ATSDR Social Vulnerability Index 2022 tract layer, the same service the challenge notebook already uses. It has `EP_MINRTY` (percent minority) and a breakdown by group (`EP_AFAM`, `EP_HISP`, `EP_ASIAN` and others), each with a margin of error, on the same tract key. The field names were confirmed in the layer's metadata. The pull script exists (`agent/tools_data/pull_svi_audit.py`) but has never run against a live project. It is loaded into a separate dataset that only the auditor's tool can read. We audit by group as well as in aggregate.
 
 ### Data by step
 
@@ -111,11 +114,11 @@ The flyer checks are a safety layer on the fourth part, not a fifth deliverable.
 - Race and ethnicity are never inputs. They are used only to audit the output.
 - Distances are straight-line upper bounds from federal sites only.
 - When data is missing, the system says "we cannot tell," never "no problem."
-- A person approves the plan before the flyer is produced.
+- A person approves the plan before the flyer is produced (planned; until then an unapproved plan simply produces no flyer).
 
 ## Where we are
-- Built: agent skeleton and tool logic on mock data, with offline tests (see `agent/README_BUILD.md`).
-- The code still reflects the first design (three LLM evidence agents) and mock column names. It has not yet been updated to this README.
-- Not built: real BigQuery loading, the SVI audit pull, the limits list, the community health worker script, the approval step, MCP Toolbox, deployment, and a real Fulton run.
-- To confirm: which second language Fulton needs, and whether the chronic-burden weight drops from 25%.
+- **Built and tested offline** (see `agent/README_BUILD.md`): the three agents' instructions, the plan and flyer loops, the plain-code steps (evidence and limits list, approval gate, plan status, flyer checks), the audit by group, and the real column names. Nine unit tests pass, and a control-flow test shows both loops rejecting a bad first answer and accepting the second. That test uses fakes in place of the language model.
+- **Not verified:** the prompts have not been run against a real Gemini model, and the BigQuery join and SVI pull have not run against a live project. On mock data the first plan usually passes the audit, so a real Fulton run decides whether a revision triggers.
+- **Not built:** the human approval step, MCP Toolbox or the BigQuery MCP server (required by the challenge), deployment, and the front end.
+- **To confirm:** which second language Fulton needs (Spanish is an assumption) and the reading-level target (the 6th to 8th grade figure is secondhand).
 - Design notes and evidence: [`IDEA.md`](IDEA.md).
