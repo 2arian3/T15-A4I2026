@@ -10,6 +10,7 @@ set -euo pipefail
 : "${PROJECT_ID:?PROJECT_ID is required}"
 : "${SA_NAME:?SA_NAME is required}"
 DATASET="${DATASET:-a4i_health}"
+AUDIT_DATASET="${AUDIT_DATASET:-a4i_audit}"
 SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -33,11 +34,25 @@ run() {
 }
 info() { printf '==> %s\n' "$*"; }
 
-if [[ "${DRY_RUN}" != "1" ]] && ! gcloud iam service-accounts describe "${SA_EMAIL}" \
-     --project="${PROJECT_ID}" >/dev/null 2>&1; then
-  info "${SA_EMAIL} does not exist; nothing to do."
-  exit 0
-fi
+# Do not exit just because the runtime identity was already removed: tools may remain.
+for identity in planner auditor; do
+  tool_email="curbside-${identity}@${PROJECT_ID}.iam.gserviceaccount.com"
+  run gcloud iam service-accounts remove-iam-policy-binding "${tool_email}" \
+    --project="${PROJECT_ID}" --member="serviceAccount:${SA_EMAIL}" \
+    --role=roles/iam.serviceAccountTokenCreator --quiet --format=none || true
+  run gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:${tool_email}" --role=roles/bigquery.jobUser --condition=None --quiet --format=none || true
+  datasets=("${DATASET}")
+  [[ "${identity}" != auditor ]] || datasets+=("${AUDIT_DATASET}")
+  for dataset in "${datasets[@]}"; do
+    run bq --project_id="${PROJECT_ID}" query --use_legacy_sql=false --quiet \
+      "REVOKE \`roles/bigquery.dataViewer\` ON SCHEMA \`${PROJECT_ID}.${dataset}\` FROM \"serviceAccount:${tool_email}\"" || true
+  done
+  if [[ "${DRY_RUN}" == "1" ]] || gcloud iam service-accounts describe "${tool_email}" \
+       --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    run gcloud iam service-accounts delete "${tool_email}" --project="${PROJECT_ID}" --quiet
+  fi
+done
 
 info "Removing project roles from ${SA_EMAIL}"
 for role in "${PROJECT_ROLES[@]}"; do
@@ -52,5 +67,8 @@ run bq --project_id="${PROJECT_ID}" query --use_legacy_sql=false --quiet \
   || true
 
 info "Deleting service account"
-run gcloud iam service-accounts delete "${SA_EMAIL}" --project="${PROJECT_ID}" --quiet
+if [[ "${DRY_RUN}" == "1" ]] || gcloud iam service-accounts describe "${SA_EMAIL}" \
+     --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  run gcloud iam service-accounts delete "${SA_EMAIL}" --project="${PROJECT_ID}" --quiet
+fi
 info "Done."

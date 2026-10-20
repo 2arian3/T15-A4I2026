@@ -6,7 +6,8 @@ import pytest
 from google.adk.apps import App
 
 import agent.agent as agent_module
-from agent.tools import describe_table_resolution
+from agent import prompts
+from agent.planner import build_clinic_plan
 
 
 def test_root_agent_identity() -> None:
@@ -24,12 +25,12 @@ def test_root_agent_name_matches_manifest() -> None:
 
 
 def test_root_agent_has_our_tool() -> None:
-    assert describe_table_resolution in agent_module.root_agent.tools
+    assert build_clinic_plan in agent_module.root_agent.find_agent("planner").tools
 
 
 def test_instruction_carries_the_ground_rules() -> None:
-    instruction = agent_module.INSTRUCTION
-    assert "describe_table_resolution" in instruction
+    instruction = prompts.PLANNER
+    assert "build_clinic_plan" in instruction
     assert "race" in instruction.lower()
     assert "modeled" in instruction
 
@@ -56,16 +57,16 @@ def test_default_model(monkeypatch, reload_agent) -> None:
     monkeypatch.delenv("CURBSIDE_MODEL", raising=False)
     module = reload_agent()
     assert module.MODEL == module.DEFAULT_MODEL == "gemini-3.8-flash"
-    assert module.root_agent.model.model == "gemini-3.8-flash"
+    assert module.root_agent.find_agent("planner").model.model == "gemini-3.8-flash"
 
 
 def test_model_override_from_env(monkeypatch, reload_agent) -> None:
     monkeypatch.setenv("CURBSIDE_MODEL", "gemini-test-model")
     module = reload_agent()
-    assert module.root_agent.model.model == "gemini-test-model"
+    assert module.root_agent.find_agent("planner").model.model == "gemini-test-model"
 
 
 def test_model_retries_transient_errors() -> None:
-    model = agent_module.root_agent.model
+    model = agent_module.root_agent.find_agent("planner").model
     assert model.retry_options is not None
     assert model.retry_options.attempts == 3

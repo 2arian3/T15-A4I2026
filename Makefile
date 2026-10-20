@@ -13,6 +13,10 @@ MODEL          ?= gemini-3.8-flash
 AGENT_NAME     ?= curbside
 SA_NAME        ?= curbside-agent
 DATASET        ?= a4i_health
+AUDIT_DATASET  ?= a4i_audit
+TOOLBOX_URL    ?=
+SECOND_LANGUAGE ?= Spanish
+COUNTY_FIPS    ?= 13121
 SA_EMAIL       := $(SA_NAME)@$(PROJECT_ID).iam.gserviceaccount.com
 Q              ?= Hello! What can you help me with, and what can't you tell me about a single neighborhood?
 CONFIRM        ?=
@@ -23,11 +27,12 @@ PORT           ?= 8000
 METADATA       := deployment_metadata.json
 AGENT_ID        = $(shell python3 -c "import json;print(json.load(open('$(METADATA)')).get('remote_agent_runtime_id') or '')" 2>/dev/null)
 
-SA_ENV := PROJECT_ID=$(PROJECT_ID) SA_NAME=$(SA_NAME) DATASET=$(DATASET)
+SA_ENV := PROJECT_ID=$(PROJECT_ID) SA_NAME=$(SA_NAME) DATASET=$(DATASET) AUDIT_DATASET=$(AUDIT_DATASET)
 
 .DEFAULT_GOAL := help
 .PHONY: help install env check auth setup setup-dry-run dev web serve run test test-integration \
-        lint deploy deploy-dry-run status list test-remote destroy destroy-sa destroy-all
+        lint deploy deploy-dry-run status list test-remote destroy destroy-sa destroy-all \
+        load-audit deploy-toolbox toolbox-dry-run
 
 help: ## Show this help
 	@echo "Curbside agent  (project=$(PROJECT_ID) region=$(REGION) model=$(MODEL)@$(MODEL_LOCATION))"
@@ -47,8 +52,14 @@ env: ## Write .env for local runs (Vertex AI, this project)
 		"# Local development configuration (gitignored). Regenerate with: make env" \
 		"GOOGLE_GENAI_USE_ENTERPRISE=true" \
 		"GOOGLE_CLOUD_PROJECT=$(PROJECT_ID)" \
+		"CURBSIDE_PROJECT_ID=$(PROJECT_ID)" \
 		"GOOGLE_CLOUD_LOCATION=$(MODEL_LOCATION)" \
-		"CURBSIDE_MODEL=$(MODEL)" > .env
+		"CURBSIDE_MODEL=$(MODEL)" \
+		"BQ_DATASET=$(DATASET)" \
+		"BQ_AUDIT_DATASET=$(AUDIT_DATASET)" \
+		"CURBSIDE_RUNTIME_SA=$(SA_EMAIL)" \
+		"TOOLBOX_URL=$(TOOLBOX_URL)" \
+		"SECOND_LANGUAGE=$(SECOND_LANGUAGE)" > .env
 	@echo "Wrote .env"
 
 auth: ## Log in to gcloud and set Application Default Credentials
@@ -73,6 +84,15 @@ setup: ## Enable APIs, create the service account, grant its roles (idempotent)
 
 setup-dry-run: ## Print what `make setup` would run
 	DRY_RUN=1 $(SA_ENV) bash scripts/setup_sa.sh
+
+load-audit: ## Load ACS counts for COUNTY_FIPS into a4i_audit (administrator credentials)
+	uv run python scripts/load_audit.py --project $(PROJECT_ID) --county $(COUNTY_FIPS)
+
+deploy-toolbox: test ## Build and deploy the private fixed-query MCP server (requires approval)
+	$(SA_ENV) REGION=$(REGION) bash scripts/deploy_toolbox.sh
+
+toolbox-dry-run: ## Print the Toolbox build, deploy and invoker IAM commands
+	DRY_RUN=1 $(SA_ENV) REGION=$(REGION) bash scripts/deploy_toolbox.sh
 
 # --- Develop and test locally ---------------------------------------------
 
@@ -107,10 +127,11 @@ lint: ## Lint with ruff
 DEPLOY_FLAGS = --project $(PROJECT_ID) --region $(REGION) \
 	--service-name $(AGENT_NAME) \
 	--service-account $(SA_EMAIL) --no-agent-identity \
-	--env-vars GOOGLE_CLOUD_LOCATION=$(MODEL_LOCATION),CURBSIDE_MODEL=$(MODEL) \
+	--env-vars CURBSIDE_PROJECT_ID=$(PROJECT_ID),GOOGLE_CLOUD_LOCATION=$(MODEL_LOCATION),CURBSIDE_MODEL=$(MODEL),TOOLBOX_URL=$(TOOLBOX_URL),BQ_DATASET=$(DATASET),BQ_AUDIT_DATASET=$(AUDIT_DATASET),SECOND_LANGUAGE=$(SECOND_LANGUAGE),CURBSIDE_RUNTIME_SA=$(SA_EMAIL) \
 	--no-confirm-project
 
 deploy: test ## Run unit tests, then deploy (or update) the agent on Agent Runtime
+	@test -n "$(TOOLBOX_URL)" || { echo 'TOOLBOX_URL is required; deploy Toolbox first'; exit 1; }
 	agents-cli deploy $(DEPLOY_FLAGS)
 
 deploy-dry-run: ## Print the deploy without running it

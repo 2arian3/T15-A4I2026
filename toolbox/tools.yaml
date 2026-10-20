@@ -1,0 +1,108 @@
+# Fixed projections: never SELECT *, demographic columns or model-written SQL.
+kind: source
+name: health
+type: bigquery
+project: ${GOOGLE_CLOUD_PROJECT}
+location: US
+readOnly: true
+maxQueryResultRows: 10000
+allowedDatasets:
+  - ${BQ_DATASET}
+---
+kind: tool
+name: burden_for_county
+type: bigquery-sql
+source: health
+description: Tract burden and transport evidence for one county; no demographic fields.
+annotations:
+  readOnlyHint: true
+parameters:
+  - name: county_fips
+    type: string
+    description: Five-digit county FIPS.
+statement: |
+  SELECT geo_id, total_pop, latitude, longitude, pct_uninsured, pct_diabetes,
+    pct_asthma, pct_copd, pct_high_bp, pct_checkup, pct_no_vehicle,
+    pct_mobility_difficulty,
+    SAFE_CAST(JSON_VALUE(TO_JSON_STRING(b), '$.pct_lack_transport') AS FLOAT64) AS pct_lack_transport,
+    NULLIF(svi_socioeconomic, -999) AS svi_socioeconomic
+  FROM `${GOOGLE_CLOUD_PROJECT}.${BQ_DATASET}.burden_tracts` b
+  WHERE STARTS_WITH(geo_id, @county_fips)
+  ORDER BY geo_id
+---
+kind: tool
+name: access_for_county
+type: bigquery-sql
+source: health
+description: Straight-line distances to listed federal facilities, upper bounds.
+annotations:
+  readOnlyHint: true
+parameters:
+  - name: county_fips
+    type: string
+    description: Five-digit county FIPS.
+statement: |
+  SELECT b.geo_id, a.km_to_any_care, a.km_to_safety_net, a.extra_km_if_uninsured
+  FROM `${GOOGLE_CLOUD_PROJECT}.${BQ_DATASET}.burden_tracts` b
+  LEFT JOIN `${GOOGLE_CLOUD_PROJECT}.${BQ_DATASET}.tract_access` a USING (geo_id)
+  WHERE STARTS_WITH(b.geo_id, @county_fips)
+  ORDER BY b.geo_id
+---
+kind: tool
+name: exposure_for_county
+type: bigquery-sql
+source: health
+description: Shared 12 km modeling-grid exposure context, never a tract score.
+annotations:
+  readOnlyHint: true
+parameters:
+  - name: county_fips
+    type: string
+    description: Five-digit county FIPS.
+statement: |
+  SELECT b.geo_id, e.mean_pm, e.days_over_12
+  FROM `${GOOGLE_CLOUD_PROJECT}.${BQ_DATASET}.burden_tracts` b
+  LEFT JOIN `${GOOGLE_CLOUD_PROJECT}.${BQ_DATASET}.exposure_tracts` e USING (geo_id)
+  WHERE STARTS_WITH(b.geo_id, @county_fips)
+  ORDER BY b.geo_id
+---
+kind: tool
+name: county_context
+type: bigquery-sql
+source: health
+description: Regional disease context and county designation count; never tract scoring.
+annotations:
+  readOnlyHint: true
+parameters:
+  - name: county_fips
+    type: string
+    description: Five-digit county FIPS.
+statement: |
+  WITH shortage AS (
+    SELECT JSON_VALUE(TO_JSON_STRING(s), '$.STATE_COUNTY_FIPS_CD') AS county_fips
+    FROM `${GOOGLE_CLOUD_PROJECT}.${BQ_DATASET}.shortage_areas` s
+  ), weeks AS (
+    SELECT week_end, percent_visits_covid, percent_visits_influenza, percent_visits_rsv
+    FROM `${GOOGLE_CLOUD_PROJECT}.${BQ_DATASET}.disease_weekly`
+    WHERE SAFE_CAST(fips AS INT64) = SAFE_CAST(@county_fips AS INT64)
+  ), latest AS (
+    SELECT week_end, percent_visits_covid, percent_visits_influenza, percent_visits_rsv
+    FROM weeks ORDER BY week_end DESC LIMIT 1
+  )
+  SELECT (SELECT COUNT(*) FROM `${GOOGLE_CLOUD_PROJECT}.${BQ_DATASET}.burden_tracts` WHERE STARTS_WITH(geo_id, @county_fips)) AS tract_count,
+    (SELECT COUNT(*) FROM weeks) AS disease_weeks,
+    (SELECT COUNTIF(percent_visits_covid IS NOT NULL OR percent_visits_influenza IS NOT NULL OR percent_visits_rsv IS NOT NULL) FROM weeks) AS usable_disease_weeks,
+    (SELECT CAST(week_end AS STRING) FROM latest) AS latest_week,
+    (SELECT percent_visits_covid FROM latest) AS latest_covid_pct,
+    (SELECT percent_visits_influenza FROM latest) AS latest_influenza_pct,
+    (SELECT percent_visits_rsv FROM latest) AS latest_rsv_pct,
+    (SELECT COUNT(*) FROM shortage WHERE county_fips = @county_fips) AS shortage_area_count,
+    (SELECT COUNT(*) FROM shortage WHERE county_fips IS NULL) AS shortage_area_unscoped_count
+---
+kind: group
+name: evidence
+tools:
+  - burden_for_county
+  - access_for_county
+  - exposure_for_county
+  - county_context
