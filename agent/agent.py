@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Curbside: Planner, then Equity auditor, then Explainer.
+"""Curbside: a chat coordinator over a fixed siting pipeline.
 
 The root name stays `curbside` so telemetry and the deployed runtime match
-agents-cli-manifest.yaml. The three sub-agents use the design names. Order is
-fixed: a model cannot skip the auditor.
+agents-cli-manifest.yaml. Staff talk to the coordinator. A new plan or an
+explicit replan calls `siting_pipeline` once: Planner, then Equity auditor,
+then Explainer. Order inside the pipeline is fixed, so a model cannot skip
+the auditor. Follow-up questions stay on the coordinator and read session
+state.
 
 Gemini is reached through Vertex AI (Gemini platform). Locally that comes from
 .env (GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_LOCATION=global); on Agent
@@ -28,6 +31,7 @@ import os
 from google.adk.agents import Agent, SequentialAgent
 from google.adk.apps import App
 from google.adk.models import Gemini
+from google.adk.tools import AgentTool
 from google.genai import types
 
 from .tools import (
@@ -98,6 +102,31 @@ Rules:
 - If the plan is missing, say that the Saturday sites are not ready yet.
 """
 
+COORDINATOR_INSTRUCTION = """\
+You talk with county health department staff about where the mobile clinic van
+parks.
+
+Plan:
+{plan_data?}
+
+Audit:
+{plan_status?}
+
+Flyer:
+{flyer?}
+
+Rules:
+- When staff ask where the van should park, or explicitly ask to replan or
+  replace the 4 Saturday sites, call siting_pipeline once.
+- When they ask about tracts, scores, data limits, or the flyer already
+  chosen, answer from the plan, audit, and flyer above. Do not call
+  siting_pipeline again.
+- Do not invent tracts or numbers. If the plan is missing, say that the
+  Saturday sites are not ready yet.
+- Do not give treatment advice.
+- Never use race or ethnicity as a reason to choose a place.
+"""
+
 
 def _gemini() -> Gemini:
     return Gemini(
@@ -132,10 +161,21 @@ explainer = Agent(
     output_key="flyer",
 )
 
-root_agent = SequentialAgent(
-    name="curbside",
-    description="Plans Saturday clinic sites, audits them, then explains the choice.",
+siting_pipeline = SequentialAgent(
+    name="siting_pipeline",
+    description=(
+        "Runs planner, then equity auditor, then explainer. "
+        "Call only to build or replace the 4 Saturday sites."
+    ),
     sub_agents=[planner, equity_auditor, explainer],
+)
+
+root_agent = Agent(
+    name="curbside",
+    model=_gemini(),
+    description="Talks with staff and runs the Saturday siting pipeline when asked.",
+    instruction=COORDINATOR_INSTRUCTION,
+    tools=[AgentTool(siting_pipeline, skip_summarization=True)],
 )
 
 app = App(
