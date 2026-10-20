@@ -32,6 +32,15 @@ class SiteScores(BaseModel):
     final_need_score: float
 
 
+# exposure_tracts is a 12 km EPA grid written onto tract IDs. Fulton County's
+# p90/p10 spread is 1.05x, so neighboring tracts share one cell. Keep mean_pm
+# for context and never fold it into the tract ranking.
+PM25_WARNING = (
+    "12 km EPA grid context only (not used in tract ranking; neighboring tracts "
+    "share one grid cell and Fulton County's p90/p10 spread is 1.05x)."
+)
+
+
 class SiteMetrics(BaseModel):
     pct_uninsured: float
     pct_diabetes: float
@@ -40,12 +49,13 @@ class SiteMetrics(BaseModel):
     pct_checkup: float
     pct_no_vehicle: float
     pct_mobility_difficulty: float
-    svi_socioeconomic: float
+    svi_socioeconomic: float | None = None
     km_to_any_care: float
     km_to_safety_net: float
     extra_km_if_uninsured: float
     nearest_safety_net_name: str | None = None
-    mean_pm: float
+    mean_pm: float | None = None
+    pm25_warning: str = PM25_WARNING
     surge_week: str | None = None
 
 
@@ -70,7 +80,10 @@ class PlanWeights(BaseModel):
     healthcare_needs: float
     accessibility_barriers: float
     transportation_and_mobility_barriers: float
-    environmental_pm25_context: float
+    environmental_pm25_context: float = Field(
+        default=0.0,
+        description="Context only. The 12 km EPA grid is not used to rank tracts.",
+    )
 
 
 class PlanMethodology(BaseModel):

@@ -13,7 +13,7 @@ from typing import Any, TypedDict
 
 from google.adk.tools.tool_context import ToolContext
 
-from .schemas import SitingPlan
+from .schemas import PM25_WARNING, SitingPlan
 
 
 class TableResolution(TypedDict):
@@ -156,7 +156,7 @@ WITH combined_tracts AS (
         a.km_to_any_care,
         a.km_to_safety_net,
         a.extra_km_if_uninsured,
-        -- 4. Environmental Context (12 km EPA grid)
+        -- 4. Environmental context only (12 km EPA grid; not used in ranking)
         e.mean_pm,
         e.days_over_12
     FROM `{project}.{dataset}.burden_tracts` AS b
@@ -181,9 +181,7 @@ percentile_ranks AS (
         -- Dimension 3: Transportation & Socioeconomic Vulnerability
         PERCENT_RANK() OVER (ORDER BY COALESCE(pct_no_vehicle, 0) ASC) AS rank_no_vehicle,
         PERCENT_RANK() OVER (ORDER BY COALESCE(pct_mobility_difficulty, 0) ASC) AS rank_mobility_diff,
-        PERCENT_RANK() OVER (ORDER BY COALESCE(svi_socioeconomic, 0) ASC) AS rank_socioeconomic,
-        -- Dimension 4: Environmental Exposure (absolute ratio vs 15 ug/m3, avoiding PERCENT_RANK on 12km grid)
-        LEAST(COALESCE(mean_pm, 0) / 15.0, 1.0) AS env_pm_factor
+        PERCENT_RANK() OVER (ORDER BY COALESCE(svi_socioeconomic, 0) ASC) AS rank_socioeconomic
     FROM combined_tracts
 ),
 static_scored AS (
@@ -197,12 +195,12 @@ static_scored AS (
             -- 35% Healthcare Accessibility Barriers
             0.20 * rank_safety_net_dist +
             0.15 * rank_uninsured_gap_km +
-            -- 25% Transportation & Mobility Barriers
-            0.12 * rank_no_vehicle +
+            -- 30% Transportation & Mobility Barriers
+            -- The former 5% PM2.5 weight moved here. mean_pm stays in the
+            -- SELECT for context and is not part of static_need_score.
+            0.17 * rank_no_vehicle +
             0.08 * rank_mobility_diff +
-            0.05 * rank_socioeconomic +
-            -- 5% Environmental Context
-            0.05 * env_pm_factor
+            0.05 * rank_socioeconomic
         ) * 100.0, 2) AS static_need_score
     FROM percentile_ranks
 ),
@@ -401,6 +399,7 @@ def select_four_saturday_tracts(
                     "extra_km_if_uninsured": tract["extra_km_if_uninsured"],
                     "nearest_safety_net_name": tract.get("nearest_safety_net_name"),
                     "mean_pm": tract["mean_pm"],
+                    "pm25_warning": PM25_WARNING,
                     "surge_week": tract.get("surge_week"),
                 },
                 "selection_reason": selection_reason,
@@ -517,8 +516,8 @@ def rank_and_select_siting_plan(
                 "weights": {
                     "healthcare_needs": 0.35,
                     "accessibility_barriers": 0.35,
-                    "transportation_and_mobility_barriers": 0.25,
-                    "environmental_pm25_context": 0.05,
+                    "transportation_and_mobility_barriers": 0.30,
+                    "environmental_pm25_context": 0.0,
                 },
                 "race_or_ethnicity_used_in_scoring": False,
                 "min_separation_km": float(min_separation_km),

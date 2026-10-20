@@ -1,5 +1,7 @@
 """Unit tests for agent/tools.py."""
 
+import re
+
 import pytest
 
 from agent.schemas import SaturdaySite, SitingPlan
@@ -88,6 +90,17 @@ def test_siting_sql_does_not_use_race_or_ethnicity() -> None:
     assert "svi_racial_ethnic" not in sql_lower
     assert "race" not in sql_lower
     assert "nullif(b.svi_socioeconomic, -999)" in sql_lower
+
+
+def test_static_need_score_does_not_weight_pm25() -> None:
+    sql_lower = SITING_RANKING_SQL_TEMPLATE.lower()
+    assert "env_pm_factor" not in sql_lower
+    static_block = sql_lower.split("static_scored as (", 1)[1].split(
+        "latest_disease_surge", 1
+    )[0]
+    score_sql = re.sub(r"--[^\n]*", "", static_block)
+    assert "mean_pm" not in score_sql
+    assert "0.17 * rank_no_vehicle" in score_sql
 
 
 def test_audit_sql_reads_the_column_planner_cannot() -> None:
@@ -258,7 +271,8 @@ def test_select_four_saturday_tracts_enforces_spatial_separation() -> None:
     assert skipped[0]["geo_id"] == "13121007603"
     assert selected[0]["why_preferred_over_alternatives"]
     assert selected[0]["selection_reason"]
-    SaturdaySite.model_validate(selected[0])
+    site = SaturdaySite.model_validate(selected[0])
+    assert site.supporting_metrics.pm25_warning.startswith("12 km EPA grid context only")
     assert haversine_km(33.6815, -84.4962, 33.6880, -84.4929) < 3.0
 
 
@@ -314,8 +328,8 @@ def test_success_plan_keeps_map_fields() -> None:
                 "weights": {
                     "healthcare_needs": 0.35,
                     "accessibility_barriers": 0.35,
-                    "transportation_and_mobility_barriers": 0.25,
-                    "environmental_pm25_context": 0.05,
+                    "transportation_and_mobility_barriers": 0.30,
+                    "environmental_pm25_context": 0.0,
                 },
                 "race_or_ethnicity_used_in_scoring": False,
                 "min_separation_km": 3.0,
@@ -332,11 +346,27 @@ def test_success_plan_keeps_map_fields() -> None:
     ).model_dump()
 
     tract = payload["selected_tracts"][0]
+    weights = payload["methodology"]["weights"]
     assert payload["status"] == "success"
     assert tract["latitude"] == 33.6815
     assert tract["longitude"] == -84.4962
     assert tract["saturday_number"] == 1
     assert tract["selection_reason"].startswith("Saturday #1")
+    assert weights["environmental_pm25_context"] == 0.0
+    assert weights["transportation_and_mobility_barriers"] == 0.30
+    assert sum(weights.values()) == pytest.approx(1.0)
+    assert tract["supporting_metrics"]["pm25_warning"].startswith(
+        "12 km EPA grid context only"
+    )
+
+
+def test_site_metrics_allow_null_svi_and_pm() -> None:
+    site = _enriched_saturday_site()
+    site["supporting_metrics"]["svi_socioeconomic"] = None
+    site["supporting_metrics"]["mean_pm"] = None
+    validated = SaturdaySite.model_validate(site)
+    assert validated.supporting_metrics.svi_socioeconomic is None
+    assert validated.supporting_metrics.mean_pm is None
 
 
 def test_error_plan_has_empty_tracts() -> None:
