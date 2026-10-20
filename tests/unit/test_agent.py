@@ -55,8 +55,8 @@ def reload_agent(monkeypatch):
 def test_default_model(monkeypatch, reload_agent) -> None:
     monkeypatch.delenv("CURBSIDE_MODEL", raising=False)
     module = reload_agent()
-    assert module.MODEL == module.DEFAULT_MODEL == "gemini-3.6-flash"
-    assert module.root_agent.model.model == "gemini-3.6-flash"
+    assert module.MODEL == module.DEFAULT_MODEL == "gemini-3.8-flash"
+    assert module.root_agent.model.model == "gemini-3.8-flash"
 
 
 def test_model_override_from_env(monkeypatch, reload_agent) -> None:

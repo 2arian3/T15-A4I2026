@@ -9,7 +9,7 @@ PROJECT_ID     ?= qwiklabs-gcp-04-e3eaf2b4f0c3
 REGION         ?= us-central1
 # ... while Gemini is called on the global endpoint.
 MODEL_LOCATION ?= global
-MODEL          ?= gemini-3.6-flash
+MODEL          ?= gemini-3.8-flash
 AGENT_NAME     ?= curbside
 SA_NAME        ?= curbside-agent
 DATASET        ?= a4i_health

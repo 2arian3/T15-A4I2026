@@ -34,7 +34,7 @@ from .tools import describe_table_resolution
 
 # gemini-3.6-flash is the model the challenge README verified. Override with
 # CURBSIDE_MODEL (in .env, or `make deploy MODEL=...`).
-DEFAULT_MODEL = "gemini-3.6-flash"
+DEFAULT_MODEL = "gemini-3.8-flash"
 MODEL = os.environ.get("CURBSIDE_MODEL", DEFAULT_MODEL)
 
 INSTRUCTION = """\
