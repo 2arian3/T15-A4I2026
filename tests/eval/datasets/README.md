@@ -115,3 +115,18 @@ Once you have a baseline, the eval surface has a few more commands worth knowing
 - `agents-cli eval optimize` — auto-tune your agent's prompts using eval data.
 
 See the [Evaluation Guide](https://google.github.io/agents-cli/guide/evaluation/) for the full surface and metric reference.
+
+## Outreach county traps
+
+`basic-dataset.json` now contains input help plus Fulton (empty shortage areas),
+Harris (missing transportation measure), Santa Clara (unavailable regional disease
+weeks), and Bronx (no distance-gap case). Each planning prompt is a validated
+PlanRequest JSON. References describe required treatment of those defects rather
+than inventing expected tract IDs or live numbers.
+
+The health snapshot loader replaces county tables. Load the matching county into
+health and audit datasets before running that county's case; do not run all four
+against a Fulton snapshot and call the results county coverage. Extract one case
+to a temporary dataset for `agents-cli eval run --dataset ...`. Start with one
+planning case and inspect token/cost logs before scaling up. Missing deployment,
+MCP or audit data must yield a human handoff, never a fabricated plan.

@@ -4,26 +4,94 @@
       "eval_case_id": "greeting",
       "prompt": {
         "role": "user",
-        "parts": [{"text": "Hello, what can you help me with?"}]
+        "parts": [
+          {
+            "text": "Hello, what can you help me with?"
+          }
+        ]
       }
     },
     {
-      "eval_case_id": "weather_query",
+      "eval_case_id": "fulton_empty_shortage",
       "prompt": {
         "role": "user",
-        "parts": [{"text": "What's the weather like in San Francisco?"}]
-      }
-    },
-    {
-      "eval_case_id": "capital_lookup",
-      "prompt": {
-        "role": "user",
-        "parts": [{"text": "What is the capital of France?"}]
+        "parts": [
+          {
+            "text": "{\"county_fips\": \"13121\", \"month\": \"2026-11\", \"saturdays\": [\"2026-11-07\", \"2026-11-14\", \"2026-11-21\", \"2026-11-28\"]}"
+          }
+        ]
       },
       "reference": {
         "response": {
           "role": "model",
-          "parts": [{"text": "The capital of France is Paris."}]
+          "parts": [
+            {
+              "text": "Treat empty shortage_areas as absence of a federal designation, not absence of need. Produce scale-tagged reasons and limitations; release a flyer only after structured audit approval. If evidence or audit is unavailable, return NEEDS_HUMAN and no flyer. Never invent source facts, an address, hours, eligibility or a service."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "eval_case_id": "harris_missing_transport",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "{\"county_fips\": \"48201\", \"month\": \"2026-11\", \"saturdays\": [\"2026-11-07\", \"2026-11-14\", \"2026-11-21\", \"2026-11-28\"]}"
+          }
+        ]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "Disclose NULL pct_lack_transport; use measured no-vehicle share where available. Do not turn missing transportation data into zero need. If evidence or audit is unavailable, return NEEDS_HUMAN and no flyer. Never invent source facts, an address, hours, eligibility or a service."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "eval_case_id": "santa_clara_missing_disease",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "{\"county_fips\": \"06085\", \"month\": \"2026-11\", \"saturdays\": [\"2026-11-07\", \"2026-11-14\", \"2026-11-21\", \"2026-11-28\"]}"
+          }
+        ]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "Report that all-NULL disease weeks cannot establish a trend. Never use a Health Service Area value or PM2.5 grid cell to rank tracts. If evidence or audit is unavailable, return NEEDS_HUMAN and no flyer. Never invent source facts, an address, hours, eligibility or a service."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "eval_case_id": "bronx_no_distance_case",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "{\"county_fips\": \"36005\", \"month\": \"2026-11\", \"saturdays\": [\"2026-11-07\", \"2026-11-14\", \"2026-11-21\", \"2026-11-28\"]}"
+          }
+        ]
+      },
+      "reference": {
+        "response": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "Do not invent a safety-net distance gap if extra_km_if_uninsured is zero. Explain whether other tract evidence supports stops; acknowledge when a distance-based case for the van cannot be made. If evidence or audit is unavailable, return NEEDS_HUMAN and no flyer. Never invent source facts, an address, hours, eligibility or a service."
+            }
+          ]
         }
       }
     }

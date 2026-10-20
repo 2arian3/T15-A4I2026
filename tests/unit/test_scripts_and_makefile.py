@@ -93,14 +93,18 @@ def test_setup_grants_exactly_the_expected_project_roles() -> None:
     assert not roles & FORBIDDEN_ROLES
     for line in out.splitlines():
         if "add-iam-policy-binding" in line and "projects " in line:
-            assert f"--member=serviceAccount:{SA_EMAIL}" in line
+            assert any(
+                f"--member=serviceAccount:{name}@{PROJECT}.iam.gserviceaccount.com"
+                in line
+                for name in ("curbside-agent", "curbside-planner", "curbside-auditor")
+            )
 
 
 def test_setup_scopes_data_access_to_the_dataset() -> None:
     out = dry_run("setup_sa.sh", DATASET="my_ds", DEPLOYER="user:dev@example.com")
     assert (
         f"GRANT `roles/bigquery.dataViewer` ON SCHEMA `{PROJECT}.my_ds` "
-        f'TO "serviceAccount:{SA_EMAIL}"'
+        f'TO "serviceAccount:curbside-planner@{PROJECT}.iam.gserviceaccount.com"'
     ) in out
 
 
@@ -110,6 +114,7 @@ def test_setup_lets_the_deployer_act_as_the_sa() -> None:
         line
         for line in out.splitlines()
         if "service-accounts add-iam-policy-binding" in line
+        and "--role=roles/iam.serviceAccountUser" in line
     )
     assert SA_EMAIL in line
     assert "--member=user:dev@example.com" in line
@@ -162,6 +167,7 @@ def test_make_deploy_runs_tests_then_deploys_with_the_sa() -> None:
     assert "--no-agent-identity" in deploy
     assert "GOOGLE_CLOUD_LOCATION=global" in deploy
     assert "CURBSIDE_MODEL=gemini-3.8-flash" in deploy
+    assert f"CURBSIDE_PROJECT_ID={PROJECT}" in deploy
     assert "--no-confirm-project" in deploy
 
 
@@ -171,6 +177,7 @@ def test_make_deploy_overrides() -> None:
     deploy = next(line for line in out.splitlines() if "agents-cli deploy" in line)
     assert "--region us-east1" in deploy
     assert "CURBSIDE_MODEL=gemini-x" in deploy
+    assert "CURBSIDE_PROJECT_ID=p1" in deploy
     assert "--service-account curbside-agent@p1.iam.gserviceaccount.com" in deploy
 
 
@@ -230,3 +237,132 @@ def test_make_serve_runs_the_deployed_app_locally() -> None:
     assert "agent.fast_api_app:app" in line
     assert "--env-file .env" in line
     assert "--reload" in line
+
+
+def test_split_identities_and_no_runtime_dataset_grant():
+    out = dry_run("setup_sa.sh", DEPLOYER="user:x@y.z")
+    planner = f"curbside-planner@{PROJECT}.iam.gserviceaccount.com"
+    auditor = f"curbside-auditor@{PROJECT}.iam.gserviceaccount.com"
+    grants = [
+        line for line in out.splitlines() if "GRANT `roles/bigquery.dataViewer`" in line
+    ]
+    assert len(grants) == 3
+    assert all(SA_EMAIL not in line for line in grants)
+    assert any(planner in line and "a4i_health" in line for line in grants)
+    assert not any(planner in line and "a4i_audit" in line for line in grants)
+    assert any(auditor in line and "a4i_audit" in line for line in grants)
+    tokens = [
+        line
+        for line in out.splitlines()
+        if "--role=roles/iam.serviceAccountTokenCreator" in line
+        and f"--member=serviceAccount:{SA_EMAIL}" in line
+    ]
+    assert len(tokens) == 2
+    assert all("service-accounts add-iam-policy-binding" in line for line in tokens)
+    assert any("REVOKE" in line and SA_EMAIL in line for line in out.splitlines())
+
+
+def test_toolbox_deployment_stays_private():
+    out = dry_run(
+        "deploy_toolbox.sh",
+        REGION="us-central1",
+        TOOLBOX_IMAGE="us-docker.pkg.dev/p/r/toolbox:tested",
+    )
+    assert "--no-allow-unauthenticated" in out
+    assert "--invoker-iam-check" in out
+    assert (
+        f"--service-account=curbside-planner@{PROJECT}.iam.gserviceaccount.com" in out
+    )
+    assert "roles/run.invoker" in out
+    assert "allUsers" not in out
+
+
+def test_destroy_sa_finishes_after_one_tool_identity_is_already_missing(tmp_path):
+    log = tmp_path / "commands"
+    gcloud = tmp_path / "gcloud"
+    gcloud.write_text(
+        '#!/bin/bash\nprintf "%s\\n" "$*" >> "$COMMAND_LOG"\nif [[ "$1 $2 $3" == "iam service-accounts describe" && "$4" == curbside-planner@* ]]; then exit 1; fi\n'
+    )
+    bq = tmp_path / "bq"
+    bq.write_text("#!/bin/bash\nexit 0\n")
+    gcloud.chmod(0o755)
+    bq.chmod(0o755)
+    result = subprocess.run(
+        ["bash", str(SCRIPTS / "destroy_sa.sh")],
+        env={
+            **os.environ,
+            "PATH": str(tmp_path) + ":" + os.environ["PATH"],
+            "PROJECT_ID": PROJECT,
+            "SA_NAME": "curbside-agent",
+            "DRY_RUN": "0",
+            "COMMAND_LOG": str(log),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    commands = log.read_text()
+    assert f"iam service-accounts describe curbside-planner@{PROJECT}" in commands
+    assert f"iam service-accounts delete curbside-planner@{PROJECT}" not in commands
+    assert f"iam service-accounts delete {SA_EMAIL}" in commands
+
+
+def test_toolbox_dry_run_creates_default_repository_before_build():
+    out = dry_run("deploy_toolbox.sh", REGION="us-east1", TOOLBOX_IMAGE="")
+    create = next(
+        line for line in out.splitlines() if "artifacts repositories create" in line
+    )
+    assert "--location=us-east1" in create
+    assert f"--project={PROJECT}" in create
+    assert "--repository-format=docker" in create
+    assert out.index(create) < out.index("gcloud builds submit")
+
+
+@pytest.mark.parametrize(
+    "state,success,created",
+    [
+        ("missing", True, True),
+        ("exists", True, False),
+        ("denied", False, False),
+        ("wrong_format", False, False),
+    ],
+)
+def test_toolbox_repository_preflight(tmp_path, state, success, created):
+    log = tmp_path / "commands"
+    gcloud = tmp_path / "gcloud"
+    gcloud.write_text("""#!/bin/bash
+printf '%s\\n' "$*" >> "$COMMAND_LOG"
+if [[ "$1 $2 $3" == 'artifacts repositories describe' ]]; then
+  case "$REPO_STATE" in
+    missing) echo 'NOT_FOUND: repository does not exist' >&2; exit 1;;
+    denied) echo 'PERMISSION_DENIED: lookup denied' >&2; exit 1;;
+    wrong_format) echo 'NPM';;
+    *) echo 'DOCKER';;
+  esac
+fi
+""")
+    gcloud.chmod(0o755)
+    result = subprocess.run(
+        ["bash", str(SCRIPTS / "deploy_toolbox.sh")],
+        env={
+            **os.environ,
+            "PATH": str(tmp_path) + ":" + os.environ["PATH"],
+            "PROJECT_ID": PROJECT,
+            "SA_NAME": "curbside-agent",
+            "REGION": "us-central1",
+            "DRY_RUN": "0",
+            "TOOLBOX_IMAGE": "",
+            "REPO_STATE": state,
+            "COMMAND_LOG": str(log),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode == 0) == success, result.stderr
+    commands = log.read_text()
+    assert ("artifacts repositories create" in commands) == created
+    assert ("builds submit" in commands) == success
+    if created:
+        assert commands.index("artifacts repositories create") < commands.index(
+            "builds submit"
+        )

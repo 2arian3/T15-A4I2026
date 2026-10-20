@@ -12,59 +12,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Curbside: decides where the mobile clinic van parks, and explains why.
-
-This is the starting skeleton: a single coordinator agent with one tool of our
-own. The multi-agent planner / equity auditor / explainer design is built on
-top of this.
-
-Gemini is reached through Vertex AI (Gemini platform). Locally that comes from
-.env (GOOGLE_GENAI_USE_ENTERPRISE=true, GOOGLE_CLOUD_LOCATION=global); on Agent
-Runtime the same variables are set by `make deploy`.
-"""
+"""Curbside's evidence → planner → auditor → approval → explainer pipeline."""
 
 import os
 
-from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.models import Gemini
 from google.genai import types
 
-from .tools import describe_table_resolution
+from .config import DEFAULT_MODEL
+from .pipeline import create_pipeline
 
-# gemini-3.6-flash is the model the challenge README verified. Override with
-# CURBSIDE_MODEL (in .env, or `make deploy MODEL=...`).
-DEFAULT_MODEL = "gemini-3.8-flash"
 MODEL = os.environ.get("CURBSIDE_MODEL", DEFAULT_MODEL)
 
-INSTRUCTION = """\
-You are Curbside, an assistant for a county health department's outreach lead.
-You help decide where one mobile clinic van should park on upcoming Saturdays,
-and you explain the choice in plain language.
 
-Rules:
-- Before you make any claim about a specific neighborhood, call
-  describe_table_resolution for each table you rely on, and never state
-  something more precisely than that table's grain supports.
-- Say which numbers are modeled and which are measured.
-- Never use race or ethnicity as a reason to choose a place.
-- You recommend places, never treatment for individuals.
-"""
+def create_app(model=None):
+    """Construct the same pipeline for serving and credential-free scripted tests."""
+    plugins = []
+    if os.getenv("CURBSIDE_DEV_LOGGING") == "1":
+        from google.adk.plugins.logging_plugin import LoggingPlugin
 
-root_agent = Agent(
-    # Keep in sync with create_params.root_agent_name in agents-cli-manifest.yaml:
-    # telemetry reports this name as gen_ai.agent.name.
-    name="curbside",
-    model=Gemini(
-        model=MODEL,
-        retry_options=types.HttpRetryOptions(attempts=3),
-    ),
-    description="Decides where the mobile clinic van parks, and explains why.",
-    instruction=INSTRUCTION,
-    tools=[describe_table_resolution],
-)
+        plugins.append(LoggingPlugin())
+    analytics = os.getenv("CURBSIDE_ANALYTICS_DATASET")
+    if analytics:
+        from google.adk.plugins.bigquery_agent_analytics_plugin import (
+            BigQueryAgentAnalyticsPlugin,
+            BigQueryLoggerConfig,
+        )
 
-app = App(
-    root_agent=root_agent,
-    name="agent",
-)
+        from .config import project_id
+
+        plugins.append(
+            BigQueryAgentAnalyticsPlugin(
+                project_id=project_id(),
+                dataset_id=analytics,
+                config=BigQueryLoggerConfig(
+                    custom_metadata_allowlist=[
+                        "plan_status",
+                        "revision_count",
+                        "audit_result",
+                    ]
+                ),
+            )
+        )
+    root = create_pipeline(
+        model or Gemini(model=MODEL, retry_options=types.HttpRetryOptions(attempts=3))
+    )
+    return App(root_agent=root, name="agent", plugins=plugins)
+
+
+app = create_app()
+root_agent = app.root_agent

@@ -1,6 +1,8 @@
 # Your agent goes here
 
-This folder is empty on purpose.
+The outreach pipeline is implemented here. See [the implementation guide](../docs/outreach-planner.md)
+for its request contract, state keys, policy decisions, setup and tests.
+The challenge requirements below explain the design constraints.
 
 We built the on-ramp: every federally recognized care site in your county with coordinates, the
 census tracts around them with disease burden, insurance, vehicle access and mobility, the federal

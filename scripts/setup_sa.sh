@@ -12,6 +12,8 @@ set -euo pipefail
 : "${PROJECT_ID:?PROJECT_ID is required}"
 : "${SA_NAME:?SA_NAME is required}"
 DATASET="${DATASET:-a4i_health}"
+AUDIT_DATASET="${AUDIT_DATASET:-a4i_audit}"
+LOCATION="${LOCATION:-US}"
 SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -27,6 +29,8 @@ APIS=(
   storage.googleapis.com
   logging.googleapis.com
   monitoring.googleapis.com
+  run.googleapis.com
+  artifactregistry.googleapis.com
   cloudtrace.googleapis.com
 )
 
@@ -59,7 +63,7 @@ info "Project         : ${PROJECT_ID}"
 info "Service account : ${SA_EMAIL}"
 
 info "Enabling APIs (no-op for ones already on)"
-run gcloud services enable "${APIS[@]}" --project="${PROJECT_ID}"
+run gcloud services enable "${APIS[@]}" --project="${PROJECT_ID}" --quiet
 
 info "Creating service account if missing"
 if [[ "${DRY_RUN}" != "1" ]] && gcloud iam service-accounts describe "${SA_EMAIL}" \
@@ -83,16 +87,48 @@ for role in "${PROJECT_ROLES[@]}"; do
     --quiet --format=none
 done
 
-info "Granting ${DATASET_ROLE} on dataset ${DATASET}"
-if [[ "${DRY_RUN}" == "1" ]] || bq --project_id="${PROJECT_ID}" show --dataset \
-     --format=none "${PROJECT_ID}:${DATASET}" >/dev/null 2>&1; then
-  # BigQuery DCL: idempotent, and scoped to this one dataset.
-  run bq --project_id="${PROJECT_ID}" query --use_legacy_sql=false --quiet \
-    "GRANT \`${DATASET_ROLE}\` ON SCHEMA \`${PROJECT_ID}.${DATASET}\` TO \"serviceAccount:${SA_EMAIL}\""
-else
-  warn "Dataset ${PROJECT_ID}:${DATASET} not found. Load it (bash scripts/load.sh),"
-  warn "then re-run 'make setup' to grant the agent read access."
+info "Creating the audit dataset if missing"
+if [[ "${DRY_RUN}" == "1" ]] || ! bq --project_id="${PROJECT_ID}" show --dataset \
+     --format=none "${PROJECT_ID}:${AUDIT_DATASET}" >/dev/null 2>&1; then
+  run bq --project_id="${PROJECT_ID}" mk --dataset --location="${LOCATION}" "${PROJECT_ID}:${AUDIT_DATASET}"
 fi
+
+for identity in planner auditor; do
+  tool_name="curbside-${identity}"
+  tool_email="${tool_name}@${PROJECT_ID}.iam.gserviceaccount.com"
+  if [[ "${DRY_RUN}" == "1" ]] || ! gcloud iam service-accounts describe "${tool_email}" \
+       --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    run gcloud iam service-accounts create "${tool_name}" --project="${PROJECT_ID}" \
+      --display-name="Curbside ${identity}" --quiet
+    [[ "${DRY_RUN}" == "1" ]] || sleep 10
+  fi
+  run gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:${tool_email}" --role=roles/bigquery.jobUser --condition=None --quiet --format=none
+  # Impersonation is scoped to these identities, never project-wide.
+  run gcloud iam service-accounts add-iam-policy-binding "${tool_email}" \
+    --project="${PROJECT_ID}" --member="serviceAccount:${SA_EMAIL}" \
+    --role=roles/iam.serviceAccountTokenCreator --quiet --format=none
+  datasets=("${DATASET}")
+  [[ "${identity}" != auditor ]] || datasets+=("${AUDIT_DATASET}")
+  for dataset in "${datasets[@]}"; do
+    if [[ "${DRY_RUN}" == "1" ]] || bq --project_id="${PROJECT_ID}" show --dataset \
+         --format=none "${PROJECT_ID}:${dataset}" >/dev/null 2>&1; then
+      run bq --project_id="${PROJECT_ID}" query --use_legacy_sql=false --quiet \
+        "GRANT \`${DATASET_ROLE}\` ON SCHEMA \`${PROJECT_ID}.${dataset}\` TO \"serviceAccount:${tool_email}\""
+    else
+      warn "Dataset ${dataset} missing; load health data and rerun make setup."
+    fi
+  done
+done
+
+# Migrate the old single-identity setup: runtime gets no direct dataset access.
+for dataset in "${DATASET}" "${AUDIT_DATASET}"; do
+  if [[ "${DRY_RUN}" == "1" ]] || bq --project_id="${PROJECT_ID}" show --dataset \
+       --format=none "${PROJECT_ID}:${dataset}" >/dev/null 2>&1; then
+    run bq --project_id="${PROJECT_ID}" query --use_legacy_sql=false --quiet \
+      "REVOKE \`${DATASET_ROLE}\` ON SCHEMA \`${PROJECT_ID}.${dataset}\` FROM \"serviceAccount:${SA_EMAIL}\""
+  fi
+done
 
 # The person (or CI) running `make deploy` must be able to act as the SA.
 DEPLOYER="${DEPLOYER:-}"
@@ -115,6 +151,14 @@ if [[ -n "${DEPLOYER}" ]]; then
     --quiet --format=none
 else
   warn "No gcloud account found; skipping roles/iam.serviceAccountUser for the deployer."
+fi
+
+
+# Local user ADC follows the same runtime -> tool impersonation chain, keylessly.
+if [[ -n "${DEPLOYER}" ]]; then
+  run gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
+    --project="${PROJECT_ID}" --member="${DEPLOYER}" \
+    --role=roles/iam.serviceAccountTokenCreator --quiet --format=none
 fi
 
 info "Done. IAM changes can take a minute or two to propagate."
