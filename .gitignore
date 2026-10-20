@@ -22,3 +22,19 @@ Thumbs.db
 # Local data
 *.parquet
 *.csv.gz
+
+# ADK / agents-cli
+.adk/
+.google-agents-cli/
+.agents-cli-scripts/
+deployment_metadata.json.lock
+.saved_chats
+.pytest_cache/
+.ruff_cache/
+.ty/
+.coverage
+htmlcov/
+
+# Credentials and private keys
+*.pem
+*-key.json
