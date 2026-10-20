@@ -1,0 +1,22 @@
+# Files uploaded by `make deploy` (agents-cli deploy) for Agent Runtime to build.
+# Only what the Dockerfile needs: pyproject.toml, uv.lock, README.md, agent/.
+.git
+.gitignore
+.gcloudignore
+.venv/
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.agents/
+.claude/
+.adk/
+notebooks/
+data/
+scripts/
+tests/
+deployment_metadata.json
+deployment_metadata.json.lock
+*.csv.gz
+*.parquet
