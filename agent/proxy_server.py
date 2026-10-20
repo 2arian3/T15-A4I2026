@@ -546,16 +546,27 @@ def _post_json(
         return exc.code, body
 
 
-def call_reasoning_engine(prompt: str) -> dict[str, Any]:
+def plan_failure_message(data: Any) -> str | None:
+    """Return plan_data.error_message when the siting plan failed."""
+    for plan in walk_values(data, {"plan_data"}):
+        if isinstance(plan, str):
+            parsed = _try_parse_json_dict(plan)
+            plan = parsed if isinstance(parsed, dict) else None
+        if isinstance(plan, dict) and plan.get("status") == "error":
+            return str(plan.get("error_message") or "Siting plan failed.")
+    return None
+
+
+def call_reasoning_engine(prompt: str, user_id: str = "web_user") -> dict[str, Any]:
     """Query the deployed ADK Reasoning Engine and normalize the response for the UI."""
     token = get_google_access_token()
     target_url = resolve_reasoning_engine_url()
     normalized_message = coerce_prompt_to_plan_request(prompt)
 
     payload = {
-        "class_method": "stream_query",
+        "class_method": "async_stream_query",
         "input": {
-            "user_id": "web_user",
+            "user_id": user_id,
             "message": normalized_message,
         },
     }
@@ -594,6 +605,11 @@ def call_reasoning_engine(prompt: str) -> dict[str, Any]:
     sites = extract_sites(data)
     summary = extract_summary(data)
     lat, lng = extract_lat_lng(data)
+
+    if not sites and (lat is None or lng is None):
+        failure = plan_failure_message(data)
+        if failure:
+            raise RuntimeError(failure)
 
     if lat is None or lng is None:
         tract_coords = load_tract_coordinates()
@@ -649,7 +665,21 @@ def extract_prompt_from_body(data: Any) -> str:
         or data.get("query")
         or ""
     )
+    if not str(prompt).strip():
+        new_message = data.get("new_message")
+        parts = new_message.get("parts") if isinstance(new_message, dict) else None
+        if isinstance(parts, list):
+            prompt = "".join(
+                part.get("text", "") for part in parts if isinstance(part, dict)
+            )
     return str(prompt).strip()
+
+
+def extract_user_id(data: Any) -> str:
+    """Read user_id from the request body, defaulting to the web demo user."""
+    if isinstance(data, dict) and data.get("user_id"):
+        return str(data["user_id"])
+    return "web_user"
 
 
 def resolve_static_asset(asset_path: str) -> Path | None:
@@ -705,7 +735,9 @@ try:
             return JSONResponse({"error": "Missing request prompt."}, status_code=400)
 
         try:
-            result = await asyncio.to_thread(call_reasoning_engine, prompt)
+            result = await asyncio.to_thread(
+                call_reasoning_engine, prompt, extract_user_id(data)
+            )
             return JSONResponse(result)
         except Exception as exc:  # pragma: no cover
             return JSONResponse({"error": str(exc)}, status_code=500)
@@ -798,7 +830,7 @@ class _StdlibProxyHandler(BaseHTTPRequestHandler):  # pragma: no cover
             return
 
         try:
-            result = call_reasoning_engine(prompt)
+            result = call_reasoning_engine(prompt, user_id=extract_user_id(data))
             self._send_json(result, status=200)
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=500)
