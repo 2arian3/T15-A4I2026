@@ -2,7 +2,13 @@
 
 import pytest
 
-from agent.tools import TABLE_RESOLUTIONS, describe_table_resolution
+from agent.tools import (
+    SITING_RANKING_SQL_TEMPLATE,
+    TABLE_RESOLUTIONS,
+    describe_table_resolution,
+    haversine_km,
+    select_four_saturday_tracts,
+)
 
 EXPECTED_TABLES = {
     "burden_tracts",
@@ -72,3 +78,150 @@ def test_result_does_not_alias_module_state() -> None:
     result = describe_table_resolution("burden_tracts")
     result["grain"] = "changed"
     assert TABLE_RESOLUTIONS["burden_tracts"]["grain"] == "census tract"
+
+
+def test_siting_sql_does_not_use_race_or_ethnicity() -> None:
+    sql_lower = SITING_RANKING_SQL_TEMPLATE.lower()
+    assert "svi_racial_ethnic" not in sql_lower
+    assert "race" not in sql_lower
+    assert "nullif(b.svi_socioeconomic, -999)" in sql_lower
+
+
+def test_select_four_saturday_tracts_enforces_spatial_separation() -> None:
+    # Two adjacent tracts (~0.8 km apart) plus 3 spread-out tracts
+    fake_candidates = [
+        {
+            "geo_id": "13121007604",
+            "total_pop": 3191,
+            "latitude": 33.6815,
+            "longitude": -84.4962,
+            "pct_uninsured": 19.8,
+            "pct_diabetes": 18.8,
+            "pct_asthma": 12.1,
+            "pct_high_bp": 44.3,
+            "pct_checkup": 77.7,
+            "pct_no_vehicle": 33.3,
+            "pct_mobility_difficulty": 22.8,
+            "svi_socioeconomic": 0.962,
+            "km_to_any_care": 3.06,
+            "km_to_safety_net": 4.6,
+            "extra_km_if_uninsured": 1.54,
+            "nearest_safety_net_name": "Clinic A",
+            "mean_pm": 9.31,
+            "surge_week": "2026-01-31",
+            "static_need_score": 82.34,
+            "dynamic_surge_multiplier": 1.151,
+            "final_need_score": 94.79,
+            "need_rank": 1,
+        },
+        {
+            # Very close (< 1.5 km) to 13121007604 -> should be skipped for spatial diversity
+            "geo_id": "13121007603",
+            "total_pop": 3979,
+            "latitude": 33.6880,
+            "longitude": -84.4929,
+            "pct_uninsured": 17.7,
+            "pct_diabetes": 15.8,
+            "pct_asthma": 11.7,
+            "pct_high_bp": 37.8,
+            "pct_checkup": 75.5,
+            "pct_no_vehicle": 49.4,
+            "pct_mobility_difficulty": 18.7,
+            "svi_socioeconomic": 0.942,
+            "km_to_any_care": 0.69,
+            "km_to_safety_net": 4.03,
+            "extra_km_if_uninsured": 3.34,
+            "nearest_safety_net_name": "Clinic A",
+            "mean_pm": 9.33,
+            "surge_week": "2026-01-31",
+            "static_need_score": 79.78,
+            "dynamic_surge_multiplier": 1.146,
+            "final_need_score": 91.45,
+            "need_rank": 2,
+        },
+        {
+            "geo_id": "13121007500",
+            "total_pop": 3447,
+            "latitude": 33.6634,
+            "longitude": -84.3849,
+            "pct_uninsured": 19.6,
+            "pct_diabetes": 18.8,
+            "pct_asthma": 11.9,
+            "pct_high_bp": 42.3,
+            "pct_checkup": 77.6,
+            "pct_no_vehicle": 42.7,
+            "pct_mobility_difficulty": 21.8,
+            "svi_socioeconomic": 0.960,
+            "km_to_any_care": 1.48,
+            "km_to_safety_net": 3.74,
+            "extra_km_if_uninsured": 2.26,
+            "nearest_safety_net_name": "Clinic B",
+            "mean_pm": 9.67,
+            "surge_week": "2026-01-31",
+            "static_need_score": 81.89,
+            "dynamic_surge_multiplier": 1.149,
+            "final_need_score": 94.07,
+            "need_rank": 3,
+        },
+        {
+            "geo_id": "13121011421",
+            "total_pop": 3933,
+            "latitude": 33.9912,
+            "longitude": -84.3450,
+            "pct_uninsured": 22.7,
+            "pct_diabetes": 10.6,
+            "pct_asthma": 10.2,
+            "pct_high_bp": 29.0,
+            "pct_checkup": 72.7,
+            "pct_no_vehicle": 12.1,
+            "pct_mobility_difficulty": 12.8,
+            "svi_socioeconomic": 0.875,
+            "km_to_any_care": 2.68,
+            "km_to_safety_net": 14.61,
+            "extra_km_if_uninsured": 11.93,
+            "nearest_safety_net_name": "Clinic C",
+            "mean_pm": 9.48,
+            "surge_week": "2026-01-31",
+            "static_need_score": 74.10,
+            "dynamic_surge_multiplier": 1.128,
+            "final_need_score": 83.55,
+            "need_rank": 4,
+        },
+        {
+            "geo_id": "13121010538",
+            "total_pop": 5642,
+            "latitude": 33.5515,
+            "longitude": -84.5810,
+            "pct_uninsured": 16.5,
+            "pct_diabetes": 15.8,
+            "pct_asthma": 11.0,
+            "pct_high_bp": 41.3,
+            "pct_checkup": 78.6,
+            "pct_no_vehicle": 5.3,
+            "pct_mobility_difficulty": 14.6,
+            "svi_socioeconomic": 0.850,
+            "km_to_any_care": 5.90,
+            "km_to_safety_net": 7.62,
+            "extra_km_if_uninsured": 1.72,
+            "nearest_safety_net_name": "Clinic D",
+            "mean_pm": 9.15,
+            "surge_week": "2026-01-31",
+            "static_need_score": 74.66,
+            "dynamic_surge_multiplier": 1.138,
+            "final_need_score": 84.93,
+            "need_rank": 5,
+        },
+    ]
+
+    selected, skipped = select_four_saturday_tracts(
+        fake_candidates, min_separation_km=3.0
+    )
+    assert len(selected) == 4
+    selected_ids = [s["geo_id"] for s in selected]
+    assert "13121007604" in selected_ids
+    assert "13121007603" not in selected_ids
+    assert len(skipped) == 1
+    assert skipped[0]["geo_id"] == "13121007603"
+    assert selected[0]["why_preferred_over_alternatives"]
+    assert selected[0]["selection_reason"]
+    assert haversine_km(33.6815, -84.4962, 33.6880, -84.4929) < 3.0

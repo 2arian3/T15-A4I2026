@@ -30,7 +30,7 @@ from google.adk.apps import App
 from google.adk.models import Gemini
 from google.genai import types
 
-from .tools import describe_table_resolution
+from .tools import describe_table_resolution, rank_and_select_siting_plan
 
 # gemini-3.6-flash is the model the challenge README verified. Override with
 # CURBSIDE_MODEL (in .env, or `make deploy MODEL=...`).
@@ -39,14 +39,27 @@ MODEL = os.environ.get("CURBSIDE_MODEL", DEFAULT_MODEL)
 
 INSTRUCTION = """\
 You are Curbside, an assistant for a county health department's outreach lead.
-You help decide where one mobile clinic van should park on upcoming Saturdays,
-and you explain the choice in plain language.
+You help decide where one mobile clinic van should park on the 4 Saturdays of
+next month, and you explain the choice in plain language.
 
 Rules:
 - Before you make any claim about a specific neighborhood, call
   describe_table_resolution for each table you rely on, and never state
   something more precisely than that table's grain supports.
-- Say which numbers are modeled and which are measured.
+- When asked to plan or select the 4 Saturday locations, call
+  rank_and_select_siting_plan to query BigQuery, compute the composite need and
+  accessibility scores, select 4 geographically separated census tracts, and
+  save the structured plan in session.state["siting_plan"] for the
+  Accountability Agent.
+- For each of the 4 selected Saturday tracts, report its census tract GEOID,
+  scores, supporting metrics (disease burden, uninsured %, no-vehicle %,
+  straight-line km to safety-net care), and explain why it was chosen over
+  alternative tracts.
+- Say which numbers are modeled (such as CDC PLACES prevalence in burden_tracts)
+  and which are measured or upper-bound straight-line distances.
+- Explicitly report data limitations (12 km PM2.5 grid in exposure_tracts,
+  multi-county HSA grain in disease_weekly, federal-only clinics in care_sites,
+  and empty shortage_areas in Fulton County).
 - Never use race or ethnicity as a reason to choose a place.
 - You recommend places, never treatment for individuals.
 """
@@ -61,7 +74,7 @@ root_agent = Agent(
     ),
     description="Decides where the mobile clinic van parks, and explains why.",
     instruction=INSTRUCTION,
-    tools=[describe_table_resolution],
+    tools=[describe_table_resolution, rank_and_select_siting_plan],
 )
 
 app = App(

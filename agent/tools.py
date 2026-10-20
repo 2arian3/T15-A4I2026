@@ -7,7 +7,11 @@ safe and unit-testable without Google Cloud credentials.
 
 from __future__ import annotations
 
-from typing import TypedDict
+import math
+import os
+from typing import Any, TypedDict
+
+from google.adk.tools.tool_context import ToolContext
 
 
 class TableResolution(TypedDict):
@@ -125,3 +129,398 @@ def describe_table_resolution(table_name: str) -> dict:
             "known_tables": sorted(TABLE_RESOLUTIONS),
         }
     return {"status": "success", **info}
+
+
+SITING_RANKING_SQL_TEMPLATE = """\
+WITH combined_tracts AS (
+    SELECT
+        b.geo_id,
+        b.total_pop,
+        b.latitude,
+        b.longitude,
+        -- 1. Healthcare Needs (CDC PLACES modeled prevalence & uninsured)
+        b.pct_uninsured,
+        b.pct_diabetes,
+        b.pct_asthma,
+        b.pct_copd,
+        b.pct_high_bp,
+        b.pct_checkup,
+        -- 2. Transportation & Socioeconomic Barriers (SVI -999 sentinel guarded)
+        b.pct_no_vehicle,
+        b.pct_mobility_difficulty,
+        NULLIF(b.svi_socioeconomic, -999) AS svi_socioeconomic,
+        NULLIF(b.svi_housing_transport, -999) AS svi_housing_transport,
+        -- 3. Healthcare Accessibility (straight-line km to federal care sites)
+        a.km_to_any_care,
+        a.km_to_safety_net,
+        a.extra_km_if_uninsured,
+        -- 4. Environmental Context (12 km EPA grid)
+        e.mean_pm,
+        e.days_over_12
+    FROM `{project}.{dataset}.burden_tracts` AS b
+    LEFT JOIN `{project}.{dataset}.tract_access` AS a
+        ON b.geo_id = a.geo_id
+    LEFT JOIN `{project}.{dataset}.exposure_tracts` AS e
+        ON b.geo_id = e.geo_id
+    WHERE b.total_pop >= 500
+),
+percentile_ranks AS (
+    SELECT
+        *,
+        -- Dimension 1: Healthcare Need (uninsured + chronic disease + low checkups)
+        PERCENT_RANK() OVER (ORDER BY COALESCE(pct_uninsured, 0) ASC) AS rank_uninsured,
+        PERCENT_RANK() OVER (
+            ORDER BY COALESCE(pct_diabetes + pct_asthma + COALESCE(pct_copd, 0) + pct_high_bp, 0) ASC
+        ) AS rank_chronic_disease,
+        PERCENT_RANK() OVER (ORDER BY COALESCE(100.0 - pct_checkup, 0) ASC) AS rank_preventive_gap,
+        -- Dimension 2: Healthcare Accessibility Barrier (distance to safety net + uninsured penalty)
+        PERCENT_RANK() OVER (ORDER BY COALESCE(km_to_safety_net, 0) ASC) AS rank_safety_net_dist,
+        PERCENT_RANK() OVER (ORDER BY COALESCE(extra_km_if_uninsured, 0) ASC) AS rank_uninsured_gap_km,
+        -- Dimension 3: Transportation & Socioeconomic Vulnerability
+        PERCENT_RANK() OVER (ORDER BY COALESCE(pct_no_vehicle, 0) ASC) AS rank_no_vehicle,
+        PERCENT_RANK() OVER (ORDER BY COALESCE(pct_mobility_difficulty, 0) ASC) AS rank_mobility_diff,
+        PERCENT_RANK() OVER (ORDER BY COALESCE(svi_socioeconomic, 0) ASC) AS rank_socioeconomic,
+        -- Dimension 4: Environmental Exposure (absolute ratio vs 15 ug/m3, avoiding PERCENT_RANK on 12km grid)
+        LEAST(COALESCE(mean_pm, 0) / 15.0, 1.0) AS env_pm_factor
+    FROM combined_tracts
+),
+static_scored AS (
+    SELECT
+        *,
+        ROUND((
+            -- 35% Healthcare Needs
+            0.15 * rank_uninsured +
+            0.12 * rank_chronic_disease +
+            0.08 * rank_preventive_gap +
+            -- 35% Healthcare Accessibility Barriers
+            0.20 * rank_safety_net_dist +
+            0.15 * rank_uninsured_gap_km +
+            -- 25% Transportation & Mobility Barriers
+            0.12 * rank_no_vehicle +
+            0.08 * rank_mobility_diff +
+            0.05 * rank_socioeconomic +
+            -- 5% Environmental Context
+            0.05 * env_pm_factor
+        ) * 100.0, 2) AS static_need_score
+    FROM percentile_ranks
+),
+latest_disease_surge AS (
+    SELECT
+        week_end,
+        county,
+        COALESCE(percent_visits_covid, 0) + COALESCE(percent_visits_influenza, 0) + COALESCE(percent_visits_rsv, 0) AS total_respiratory_pct,
+        ed_trends_covid,
+        ed_trends_influenza,
+        ed_trends_rsv,
+        CASE
+            WHEN ed_trends_covid = 'Increasing' OR ed_trends_influenza = 'Increasing' OR ed_trends_rsv = 'Increasing' THEN 1.15
+            ELSE 1.00
+        END AS trend_multiplier
+    FROM `{project}.{dataset}.disease_weekly`
+    WHERE week_end = (SELECT MAX(week_end) FROM `{project}.{dataset}.disease_weekly`)
+    LIMIT 1
+)
+SELECT
+    s.geo_id,
+    s.total_pop,
+    ROUND(s.latitude, 5) AS latitude,
+    ROUND(s.longitude, 5) AS longitude,
+    ROUND(s.pct_uninsured, 1) AS pct_uninsured,
+    ROUND(s.pct_diabetes, 1) AS pct_diabetes,
+    ROUND(s.pct_asthma, 1) AS pct_asthma,
+    ROUND(s.pct_copd, 1) AS pct_copd,
+    ROUND(s.pct_high_bp, 1) AS pct_high_bp,
+    ROUND(s.pct_checkup, 1) AS pct_checkup,
+    ROUND(s.pct_no_vehicle, 1) AS pct_no_vehicle,
+    ROUND(s.pct_mobility_difficulty, 1) AS pct_mobility_difficulty,
+    ROUND(s.svi_socioeconomic, 3) AS svi_socioeconomic,
+    ROUND(s.km_to_any_care, 2) AS km_to_any_care,
+    ROUND(s.km_to_safety_net, 2) AS km_to_safety_net,
+    ROUND(s.extra_km_if_uninsured, 2) AS extra_km_if_uninsured,
+    ROUND(s.mean_pm, 2) AS mean_pm,
+    CAST(d.week_end AS STRING) AS surge_week,
+    ROUND(1.0 + (COALESCE(d.trend_multiplier, 1.0) - 1.0) * (s.pct_asthma / 12.0), 3) AS dynamic_surge_multiplier,
+    s.static_need_score,
+    ROUND(
+        s.static_need_score * (1.0 + (COALESCE(d.trend_multiplier, 1.0) - 1.0) * (s.pct_asthma / 12.0)),
+        2
+    ) AS final_need_score,
+    DENSE_RANK() OVER (
+        ORDER BY s.static_need_score * (1.0 + (COALESCE(d.trend_multiplier, 1.0) - 1.0) * (s.pct_asthma / 12.0)) DESC
+    ) AS need_rank
+FROM static_scored AS s
+LEFT JOIN latest_disease_surge AS d
+    ON TRUE
+ORDER BY final_need_score DESC
+LIMIT {top_n}
+"""
+
+
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Computes great-circle distance in kilometers between two lat/lon points."""
+    radius_km = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dphi / 2.0) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
+    )
+    return 2.0 * radius_km * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
+
+
+def select_four_saturday_tracts(
+    candidates: list[dict[str, Any]],
+    min_separation_km: float = 3.0,
+    num_saturdays: int = 4,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Selects 4 geographically spread census tracts from ranked candidates.
+
+    Uses greedy selection over candidates ordered by `final_need_score` DESC,
+    enforcing at least `min_separation_km` between chosen Saturday sites so the
+    mobile clinic van serves distinct neighborhoods rather than parking on
+    adjacent blocks every week.
+
+    Returns:
+        (selected_tracts, skipped_Spatial_duplicates)
+    """
+    selected: list[dict[str, Any]] = []
+    skipped_nearby: list[dict[str, Any]] = []
+
+    for row in candidates:
+        if len(selected) >= num_saturdays:
+            break
+        lat = float(row.get("latitude") or 0.0)
+        lon = float(row.get("longitude") or 0.0)
+        too_close_to: dict[str, Any] | None = None
+        min_dist = float("inf")
+        for chosen in selected:
+            dist = haversine_km(
+                lat,
+                lon,
+                float(chosen.get("latitude") or 0.0),
+                float(chosen.get("longitude") or 0.0),
+            )
+            if dist < min_separation_km and dist < min_dist:
+                min_dist = dist
+                too_close_to = chosen
+
+        if too_close_to is not None:
+            skipped_copy = dict(row)
+            skipped_copy["skipped_due_to_tract"] = too_close_to["geo_id"]
+            skipped_copy["distance_to_selected_km"] = round(min_dist, 2)
+            skipped_nearby.append(skipped_copy)
+            continue
+
+        selected.append(dict(row))
+
+    # Fallback if fewer than num_saturdays met the separation threshold
+    if len(selected) < num_saturdays:
+        chosen_ids = {s["geo_id"] for s in selected}
+        for row in candidates:
+            if len(selected) >= num_saturdays:
+                break
+            if row["geo_id"] not in chosen_ids:
+                selected.append(dict(row))
+                chosen_ids.add(row["geo_id"])
+
+    # Enrich each of the 4 selected tracts with Saturday assignment and explanations
+    enriched_selected: list[dict[str, Any]] = []
+    for idx, tract in enumerate(selected, start=1):
+        geo_id = tract["geo_id"]
+        nearby_alts = [
+            s for s in skipped_nearby if s.get("skipped_due_to_tract") == geo_id
+        ]
+        if nearby_alts:
+            alt_strs = [
+                f"tract {a['geo_id']} (rank #{a['need_rank']}, score {a['final_need_score']}, "
+                f"located {a['distance_to_selected_km']} km away)"
+                for a in nearby_alts[:2]
+            ]
+            why_preferred = (
+                f"Preferred over adjacent high-need {', '.join(alt_strs)} because "
+                f"tract {geo_id} achieved a higher composite need score ({tract['final_need_score']}) "
+                f"within the same {min_separation_km:.1f} km geographic catchment, preserving "
+                f"subsequent Saturdays for other underserved corridors."
+            )
+        else:
+            lower_candidates = [
+                c
+                for c in candidates
+                if int(c.get("need_rank", 999)) > int(tract.get("need_rank", 0))
+            ][:2]
+            alt_ids = ", ".join(
+                f"{c['geo_id']} (score {c['final_need_score']}, km_to_safety_net={c['km_to_safety_net']} km)"
+                for c in lower_candidates
+            )
+            why_preferred = (
+                f"Selected as a distinct geographic anchor (>= {min_separation_km:.1f} km from prior "
+                f"Saturday stops) and outranked lower-scoring alternatives ({alt_ids}) due to severe "
+                f"combined safety-net distance ({tract['km_to_safety_net']} km; +{tract['extra_km_if_uninsured']} km "
+                f"penalty if uninsured) and transportation barriers ({tract['pct_no_vehicle']}% no vehicle)."
+            )
+
+        selection_reason = (
+            f"Saturday #{idx} — Census Tract {geo_id} (Pop: {tract['total_pop']}, Rank #{tract['need_rank']}, "
+            f"Final Score: {tract['final_need_score']}/100): High modeled chronic burden "
+            f"(diabetes {tract['pct_diabetes']}%, asthma {tract['pct_asthma']}%, high BP {tract['pct_high_bp']}%, "
+            f"routine checkup {tract['pct_checkup']}%), {tract['pct_uninsured']}% uninsured, "
+            f"severe transit barriers ({tract['pct_no_vehicle']}% households without a vehicle, "
+            f"{tract['pct_mobility_difficulty']}% mobility difficulty), and {tract['km_to_safety_net']} km "
+            f"straight-line distance to the nearest federal safety-net clinic "
+            f"({tract.get('nearest_safety_net_name') or 'nearest safety-net site'}, "
+            f"+{tract['extra_km_if_uninsured']} km extra distance if uninsured)."
+        )
+
+        enriched_selected.append(
+            {
+                "saturday_number": idx,
+                "geo_id": geo_id,
+                "total_pop": tract["total_pop"],
+                "latitude": tract["latitude"],
+                "longitude": tract["longitude"],
+                "need_rank": tract["need_rank"],
+                "scores": {
+                    "static_need_score": tract["static_need_score"],
+                    "dynamic_surge_multiplier": tract["dynamic_surge_multiplier"],
+                    "final_need_score": tract["final_need_score"],
+                },
+                "supporting_metrics": {
+                    "pct_uninsured": tract["pct_uninsured"],
+                    "pct_diabetes": tract["pct_diabetes"],
+                    "pct_asthma": tract["pct_asthma"],
+                    "pct_high_bp": tract["pct_high_bp"],
+                    "pct_checkup": tract["pct_checkup"],
+                    "pct_no_vehicle": tract["pct_no_vehicle"],
+                    "pct_mobility_difficulty": tract["pct_mobility_difficulty"],
+                    "svi_socioeconomic": tract["svi_socioeconomic"],
+                    "km_to_any_care": tract["km_to_any_care"],
+                    "km_to_safety_net": tract["km_to_safety_net"],
+                    "extra_km_if_uninsured": tract["extra_km_if_uninsured"],
+                    "nearest_safety_net_name": tract.get("nearest_safety_net_name"),
+                    "mean_pm": tract["mean_pm"],
+                    "surge_week": tract.get("surge_week"),
+                },
+                "selection_reason": selection_reason,
+                "why_preferred_over_alternatives": why_preferred,
+            }
+        )
+
+    return enriched_selected, skipped_nearby
+
+
+def rank_and_select_siting_plan(
+    min_separation_km: float = 3.0,
+    top_n: int = 20,
+    tool_context: ToolContext | None = None,
+) -> dict[str, Any]:
+    """Queries BigQuery to rank census tracts and selects a 4-Saturday mobile clinic siting plan.
+
+    Evaluates healthcare needs (`burden_tracts`), safety-net clinic accessibility
+    (`tract_access`), transportation barriers (`pct_no_vehicle`, `pct_mobility_difficulty`),
+    and regional respiratory trends (`disease_weekly`) without using race or ethnicity
+    as an input. Stores the resulting siting plan in `session.state["siting_plan"]`
+    for downstream review by the Accountability Agent.
+
+    Args:
+        min_separation_km: Minimum straight-line distance in km between the 4
+            selected Saturday tracts so the van covers distinct geographic areas.
+        top_n: Number of top-ranked candidate tracts to retrieve from BigQuery.
+        tool_context: Optional ADK ToolContext used to persist `siting_plan` in
+            `session.state`.
+
+    Returns:
+        A dict containing `status`, `selected_tracts` (4 Saturday stops with
+        scores, metrics, reasons, and alternative comparisons), `candidate_pool`,
+        and `limitations`.
+    """
+    from google.cloud import bigquery
+
+    project = (
+        os.environ.get("GOOGLE_CLOUD_PROJECT")
+        or os.environ.get("GCP_PROJECT_ID")
+        or "qwiklabs-gcp-04-e3eaf2b4f0c3"
+    )
+    dataset = os.environ.get("BQ_DATASET", "a4i_health")
+    safe_top_n = max(4, min(int(top_n), 50))
+    sql = SITING_RANKING_SQL_TEMPLATE.format(
+        project=project,
+        dataset=dataset,
+        top_n=safe_top_n,
+    )
+
+    try:
+        client = bigquery.Client(project=project)
+        query_job = client.query(sql)
+        rows = [dict(row.items()) for row in query_job.result()]
+    except Exception as exc:
+        return {
+            "status": "error",
+            "error_message": f"BigQuery siting query failed: {exc}",
+        }
+
+    selected_tracts, skipped_nearby = select_four_saturday_tracts(
+        candidates=rows,
+        min_separation_km=float(min_separation_km),
+        num_saturdays=4,
+    )
+
+    limitations = [
+        {
+            "table": "burden_tracts",
+            "grain": TABLE_RESOLUTIONS["burden_tracts"]["grain"],
+            "limitation": TABLE_RESOLUTIONS["burden_tracts"]["caveat"],
+        },
+        {
+            "table": "tract_access",
+            "grain": TABLE_RESOLUTIONS["tract_access"]["grain"],
+            "limitation": (
+                f"{TABLE_RESOLUTIONS['tract_access']['caveat']} Also reflects "
+                f"federal care_sites only ({TABLE_RESOLUTIONS['care_sites']['caveat']})"
+            ),
+        },
+        {
+            "table": "exposure_tracts",
+            "grain": TABLE_RESOLUTIONS["exposure_tracts"]["grain"],
+            "limitation": TABLE_RESOLUTIONS["exposure_tracts"]["caveat"],
+        },
+        {
+            "table": "disease_weekly",
+            "grain": TABLE_RESOLUTIONS["disease_weekly"]["grain"],
+            "limitation": TABLE_RESOLUTIONS["disease_weekly"]["caveat"],
+        },
+        {
+            "table": "shortage_areas",
+            "grain": TABLE_RESOLUTIONS["shortage_areas"]["grain"],
+            "limitation": (
+                f"{TABLE_RESOLUTIONS['shortage_areas']['caveat']} In Fulton County, "
+                "all 99 HRSA polygons are in 'Proposed For Withdrawal' status and "
+                "therefore excluded from live shortage_areas."
+            ),
+        },
+    ]
+
+    siting_plan = {
+        "status": "success",
+        "project": project,
+        "dataset": dataset,
+        "methodology": {
+            "weights": {
+                "healthcare_needs": 0.35,
+                "accessibility_barriers": 0.35,
+                "transportation_and_mobility_barriers": 0.25,
+                "environmental_pm25_context": 0.05,
+            },
+            "race_or_ethnicity_used_in_scoring": False,
+            "min_separation_km": float(min_separation_km),
+        },
+        "selected_tracts": selected_tracts,
+        "skipped_adjacent_high_need_tracts": skipped_nearby,
+        "candidate_pool": rows,
+        "limitations": limitations,
+    }
+
+    if tool_context is not None and hasattr(tool_context, "state"):
+        tool_context.state["siting_plan"] = siting_plan
+
+    return siting_plan
