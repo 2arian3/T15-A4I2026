@@ -41,7 +41,7 @@ A planner agent picks four Saturday stops from measured need and access data, wi
 - Removing a sensitive column does not remove bias. Correlated features carry it (fairness literature on unawareness).
 - Auditing therefore needs the demographic data, used for assessment only. That matches the README's rule.
 - The need-matched baseline separates "the skew is explained by need" (disclose it) from "a proxy may be at work" (revise).
-- **Caveat:** the fairness literature notes that imputing protected class from proxies can distort disparity estimates. We would use actual tract-level data, so we avoid imputation. The data source is still unverified.
+- **Caveat:** the fairness literature notes that imputing protected class from proxies can distort disparity estimates. We use actual tract-level data, so we avoid imputation. **Source:** the CDC/ATSDR SVI 2022 tract layer (`EP_MINRTY` plus `EP_AFAM`, `EP_HISP`, `EP_ASIAN` and others, with margins of error), the same service the challenge notebook uses. Field names were confirmed in the layer's metadata; the pull is not yet written. Audit by group as well as in aggregate, because one minority share can hide a skew against a single group.
 
 ### 6. Reviewer: an independent critic with a conflicting prompt
 **Choice:** A reviewer whose whole prompt is "hedge, cite, refuse." It rejects scale-crossing claims.
@@ -51,13 +51,14 @@ A planner agent picks four Saturday stops from measured need and access data, wi
 - A non-LLM approval gate decides when the loop stops, so model text cannot override the audit.
 
 ### 7. Explainer: plain language, no hedging
-**Choice:** A separate agent for the resident-facing flyer, English and Spanish, with a text-message version.
+**Choice:** A separate agent for the resident-facing materials: a flyer in English and a second language, a text message, and a script for a community health worker (the Clinic Plan brief lists all three). The second language is not assumed to be Spanish; `pct_limited_english` shows where non-English materials are needed but not which language, so confirm it from Fulton language data or label it an assumption.
 **Why:**
 - Health materials are often written above the 10th-grade level (CHCS). A 6th-to-8th-grade target is widely cited but comes from secondary reporting, so verify it on cdc.gov before putting it on a slide.
 - Its instructions directly contradict the reviewer's, which is the "two agents with conflicting prompts" judges look for.
 - **Add:** a Flesch-Kincaid check tool so the reading level is measured, not claimed.
 
 ### 8. Honest limits are part of the product
+The Clinic Plan brief says "what we could not tell you" must be named, counted and not hidden, and is a finding, not a disclaimer. So the evidence step (plain code) builds a counted limits list into state, instead of leaving limits as tags on individual claims. It counts, for example, tracts with no health estimate, shortage areas (0 live, 99 proposed for withdrawal), and claims by scale.
 - Distances are straight-line upper bounds from federal sites only.
 - PM2.5 cannot separate tracts. The disease trend is regional.
 - Fulton has no live shortage areas (all 99 are proposed for withdrawal).
@@ -85,7 +86,8 @@ A planner agent picks four Saturday stops from measured need and access data, wi
 4. **Rejected its own first answer:** `plan_v1` fails the audit, then `plan_v2` passes. **Not yet shown live:** on mock data the first plan passes, so we need a real Fulton run that triggers a revision.
 
 ## Open items to verify
-- The source and license of the tract-level demographic data for the auditor.
+- License and pull for the SVI audit fields (same federal service as the notebook, so likely fine; confirm with the table captain).
+- Which second language Fulton needs for the flyer.
 - The CDC reading-level guidance, on cdc.gov.
 - That the catchment radius and index weights are defensible against Fulton data.
 - Whether a real Fulton run triggers a revision.
