@@ -65,7 +65,9 @@ def granted_roles(output: str, verb: str) -> set[str]:
     }
 
 
-@pytest.mark.parametrize("script", ["setup_sa.sh", "destroy_sa.sh"])
+@pytest.mark.parametrize(
+    "script", ["setup_sa.sh", "destroy_sa.sh", "with_cli_metadata.sh"]
+)
 def test_scripts_parse(script: str) -> None:
     subprocess.run(["bash", "-n", str(SCRIPTS / script)], check=True)
 
@@ -169,6 +171,8 @@ def test_make_deploy_runs_tests_then_deploys_with_the_sa() -> None:
     assert "CURBSIDE_MODEL=gemini-3.8-flash" in deploy
     assert f"CURBSIDE_PROJECT_ID={PROJECT}" in deploy
     assert "--no-confirm-project" in deploy
+    assert "--service-name curbside" in deploy
+    assert "with_cli_metadata.sh" not in deploy
 
 
 @needs_make
@@ -179,6 +183,26 @@ def test_make_deploy_overrides() -> None:
     assert "CURBSIDE_MODEL=gemini-x" in deploy
     assert "CURBSIDE_PROJECT_ID=p1" in deploy
     assert "--service-account curbside-agent@p1.iam.gserviceaccount.com" in deploy
+
+
+@needs_make
+def test_make_deploy_dev_uses_sandbox_name_and_metadata() -> None:
+    out = make_n("deploy-dev", "DEV_ID=501")
+    deploy = next(line for line in out.splitlines() if "agents-cli deploy" in line)
+    assert "scripts/with_cli_metadata.sh" in deploy
+    assert "deployment_metadata.dev.json" in deploy
+    assert "--service-name curbside-dev-501" in deploy
+    assert f"--service-account {SA_EMAIL}" in deploy
+    assert "--no-agent-identity" in deploy
+
+
+@needs_make
+def test_make_destroy_dev_targets_sandbox_metadata() -> None:
+    out = make_n("destroy-dev", "DEV_ID=501")
+    assert "scripts/destroy_dev.py" in out
+    assert "scripts/destroy_agent.py" not in out
+    assert "--name curbside-dev-501" in out
+    assert "--metadata deployment_metadata.dev.json" in out
 
 
 @needs_make
@@ -208,12 +232,16 @@ def test_make_help_lists_every_documented_target() -> None:
         "setup",
         "test",
         "deploy",
+        "deploy-dev",
+        "deploy-frontend",
         "destroy",
+        "destroy-dev",
         "destroy-sa",
         "run",
         "dev",
         "web",
         "serve",
+        "frontend",
     ):
         assert target in listed, target
 
@@ -228,6 +256,39 @@ def test_make_web_runs_adk_web_on_the_repo(tmp_path) -> None:
     assert line.rstrip().endswith(" .")  # agents dir = repo root, app = agent/
     custom = make_n("web", "HOST=0.0.0.0", "PORT=8080")
     assert "--host 0.0.0.0 --port 8080" in custom
+
+
+def test_with_cli_metadata_restores_production_file() -> None:
+    prod = ROOT / "deployment_metadata.json"
+    sandbox = ROOT / "deployment_metadata.dev.json"
+    original = prod.read_text()
+    sandbox_existed = sandbox.exists()
+    sandbox_original = sandbox.read_text() if sandbox_existed else None
+    marker = "sandbox-marker-do-not-commit\n"
+    try:
+        sandbox.write_text(marker)
+        result = subprocess.run(
+            [
+                "bash",
+                str(SCRIPTS / "with_cli_metadata.sh"),
+                str(sandbox),
+                "python3",
+                "-c",
+                "from pathlib import Path; print(Path('deployment_metadata.json').read_text(), end='')",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout == marker
+        assert prod.read_text() == original
+    finally:
+        prod.write_text(original)
+        if sandbox_existed:
+            sandbox.write_text(sandbox_original or "")
+        elif sandbox.exists():
+            sandbox.unlink()
 
 
 @needs_make

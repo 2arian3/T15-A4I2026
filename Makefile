@@ -20,12 +20,20 @@ COUNTY_FIPS    ?= 13121
 SA_EMAIL       := $(SA_NAME)@$(PROJECT_ID).iam.gserviceaccount.com
 Q              ?= Hello! What can you help me with, and what can't you tell me about a single neighborhood?
 CONFIRM        ?=
-# Local web server (make web / make serve)
+# Local web server (make web / make serve / make frontend)
 HOST           ?= 127.0.0.1
 PORT           ?= 8000
+FRONTEND_NAME  ?= curbside-ui
+FRONTEND_PORT  ?= 8002
 
+# Production Agent Runtime (shared). Sandbox is a separate engine so a personal
+# deploy cannot overwrite curbside. Override the suffix with DEV_ID=...
+DEV_ID         ?= $(shell id -u)
+DEV_AGENT_NAME ?= curbside-dev-$(DEV_ID)
 METADATA       := deployment_metadata.json
+DEV_METADATA   := deployment_metadata.dev.json
 AGENT_ID        = $(shell python3 -c "import json;print(json.load(open('$(METADATA)')).get('remote_agent_runtime_id') or '')" 2>/dev/null)
+DEV_AGENT_ID    = $(shell python3 -c "import json;print(json.load(open('$(DEV_METADATA)')).get('remote_agent_runtime_id') or '')" 2>/dev/null)
 
 SA_ENV := PROJECT_ID=$(PROJECT_ID) SA_NAME=$(SA_NAME) DATASET=$(DATASET) AUDIT_DATASET=$(AUDIT_DATASET)
 
@@ -36,6 +44,8 @@ SA_ENV := PROJECT_ID=$(PROJECT_ID) SA_NAME=$(SA_NAME) DATASET=$(DATASET) AUDIT_D
 
 help: ## Show this help
 	@echo "Curbside agent  (project=$(PROJECT_ID) region=$(REGION) model=$(MODEL)@$(MODEL_LOCATION))"
+	@echo "  production : $(AGENT_NAME)  ($(METADATA))"
+	@echo "  sandbox    : $(DEV_AGENT_NAME)  ($(DEV_METADATA))"
 	@echo
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -109,6 +119,10 @@ serve: ## Run the same server Agent Engine runs, locally, with auto-reload
 	@echo "Server: http://$(HOST):$(PORT)  (dev UI at /dev-ui/, Ctrl+C to stop)"
 	uv run --env-file .env uvicorn agent.fast_api_app:app --host $(HOST) --port $(PORT) --reload
 
+frontend: ## Run the Leaflet frontend + Agent Engine proxy locally (default 127.0.0.1:8002)
+	@echo "Curbside UI: http://$(HOST):$(FRONTEND_PORT)  (Ctrl+C to stop)"
+	uv run uvicorn agent.proxy_server:app --host $(HOST) --port $(FRONTEND_PORT) --reload
+
 run: ## Ask the local agent one question: make run Q="..."
 	agents-cli run "$(Q)"
 
@@ -124,34 +138,100 @@ lint: ## Lint with ruff
 
 # --- Deploy to Agent Runtime ----------------------------------------------
 
-DEPLOY_FLAGS = --project $(PROJECT_ID) --region $(REGION) \
-	--service-name $(AGENT_NAME) \
+DEPLOY_COMMON = --project $(PROJECT_ID) --region $(REGION) \
 	--service-account $(SA_EMAIL) --no-agent-identity \
 	--env-vars CURBSIDE_PROJECT_ID=$(PROJECT_ID),GOOGLE_CLOUD_LOCATION=$(MODEL_LOCATION),CURBSIDE_MODEL=$(MODEL),TOOLBOX_URL=$(TOOLBOX_URL),BQ_DATASET=$(DATASET),BQ_AUDIT_DATASET=$(AUDIT_DATASET),SECOND_LANGUAGE=$(SECOND_LANGUAGE),CURBSIDE_RUNTIME_SA=$(SA_EMAIL) \
 	--no-confirm-project
+DEPLOY_FLAGS = $(DEPLOY_COMMON) --service-name $(AGENT_NAME)
+DEV_DEPLOY_FLAGS = $(DEPLOY_COMMON) --service-name $(DEV_AGENT_NAME)
+WITH_DEV_META = bash scripts/with_cli_metadata.sh $(DEV_METADATA)
 
 deploy: test ## Run unit tests, then deploy (or update) the agent on Agent Runtime
 	@test -n "$(TOOLBOX_URL)" || { echo 'TOOLBOX_URL is required; deploy Toolbox first'; exit 1; }
 	agents-cli deploy $(DEPLOY_FLAGS)
 
-deploy-dry-run: ## Print the deploy without running it
+deploy-dry-run: ## Print the production deploy without running it
 	agents-cli deploy $(DEPLOY_FLAGS) --dry-run
 
-status: ## Check a deploy that is still in progress
+deploy-dev: test ## Sandbox: unit tests, then create/update curbside-dev-<uid>
+	$(WITH_DEV_META) agents-cli deploy $(DEV_DEPLOY_FLAGS)
+
+deploy-dev-dry-run: ## Print the sandbox deploy without running it
+	$(WITH_DEV_META) agents-cli deploy $(DEV_DEPLOY_FLAGS) --dry-run
+
+status: ## Check a production deploy that is still in progress
 	agents-cli deploy --status --project $(PROJECT_ID) --region $(REGION) --no-confirm-project
+
+status-dev: ## Check a sandbox deploy that is still in progress
+	$(WITH_DEV_META) agents-cli deploy --status --project $(PROJECT_ID) --region $(REGION) --no-confirm-project
 
 list: ## List Agent Runtime deployments in the project
 	agents-cli deploy --list --project $(PROJECT_ID) --region $(REGION) --no-confirm-project
 
-test-remote: ## Ask the deployed agent one question: make test-remote Q="..."
+test-remote: ## Ask production curbside one question: make test-remote Q="..."
 	@test -n "$(AGENT_ID)" || { echo "No deployed agent in $(METADATA); run make deploy"; exit 1; }
 	agents-cli run --url https://$(REGION)-aiplatform.googleapis.com/v1/$(AGENT_ID) --mode adk "$(Q)"
 
+test-remote-dev: ## Ask sandbox curbside-dev one question: make test-remote-dev Q="..."
+	@test -n "$(DEV_AGENT_ID)" || { echo "No sandbox agent in $(DEV_METADATA); run make deploy-dev"; exit 1; }
+	agents-cli run --url https://$(REGION)-aiplatform.googleapis.com/v1/$(DEV_AGENT_ID) --mode adk "$(Q)"
+
+# --- Deploy Frontend to Cloud Run -----------------------------------------
+
+FRONTEND_BUILD_DIR := .frontend-build
+FRONTEND_ENGINE_URL = https://$(REGION)-aiplatform.googleapis.com/v1/$(AGENT_ID):streamQuery
+FRONTEND_DEPLOY_CMD = gcloud run deploy $(FRONTEND_NAME) \
+	--source $(FRONTEND_BUILD_DIR) \
+	--project $(PROJECT_ID) \
+	--region $(REGION) \
+	--service-account $(SA_EMAIL) \
+	--allow-unauthenticated \
+	--quiet \
+	--set-env-vars "REASONING_ENGINE_URL=$(FRONTEND_ENGINE_URL),GOOGLE_CLOUD_PROJECT=$(PROJECT_ID),REGION=$(REGION)"
+
+stage-frontend: ## Prepare lightweight .frontend-build directory for Cloud Run
+	@rm -rf $(FRONTEND_BUILD_DIR)
+	@mkdir -p $(FRONTEND_BUILD_DIR)/agent
+	@cp -R frontend $(FRONTEND_BUILD_DIR)/frontend
+	@cp agent/proxy_server.py $(FRONTEND_BUILD_DIR)/agent/proxy_server.py
+	@: > $(FRONTEND_BUILD_DIR)/agent/__init__.py
+	@cp agent/requirements.txt $(FRONTEND_BUILD_DIR)/requirements.txt
+	@test ! -f $(METADATA) || cp $(METADATA) $(FRONTEND_BUILD_DIR)/$(METADATA)
+	@printf '%s\n' \
+		"FROM python:3.12-slim" \
+		"WORKDIR /code" \
+		"COPY requirements.txt ./" \
+		"RUN pip install --no-cache-dir -r requirements.txt" \
+		"COPY frontend ./frontend" \
+		"COPY agent ./agent" \
+		"COPY deployment_metadata.json* ./" \
+		"ENV PORT=8080" \
+		"EXPOSE 8080" \
+		'CMD ["uvicorn", "agent.proxy_server:app", "--host", "0.0.0.0", "--port", "8080"]' \
+		> $(FRONTEND_BUILD_DIR)/Dockerfile
+
+deploy-frontend: test stage-frontend ## Deploy the Leaflet frontend + proxy to Cloud Run
+	@test -n "$(AGENT_ID)" || { echo "No deployed agent in $(METADATA); run make deploy"; exit 1; }
+	gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com --project $(PROJECT_ID)
+	$(FRONTEND_DEPLOY_CMD) || { \
+		echo "--- Fetching latest Cloud Build log ---"; \
+		BUILD_ID=$$(gcloud builds list --region=$(REGION) --project=$(PROJECT_ID) --limit=1 --format="value(id)" 2>/dev/null); \
+		test -z "$$BUILD_ID" || gcloud builds log "$$BUILD_ID" --region=$(REGION) --project=$(PROJECT_ID) | tail -n 60; \
+		exit 1; \
+	}
+
+deploy-frontend-dry-run: ## Print the Cloud Run frontend deploy command without running it
+	@echo $(FRONTEND_DEPLOY_CMD)
+
 # --- Tear down -------------------------------------------------------------
 
-destroy: ## Delete the agent from Agent Runtime (asks first; CONFIRM=yes to skip)
+destroy: ## Delete production curbside (asks first; CONFIRM=yes to skip)
 	uv run python scripts/destroy_agent.py --project $(PROJECT_ID) --region $(REGION) \
 		--name $(AGENT_NAME) --metadata $(METADATA) $(if $(filter yes,$(CONFIRM)),--yes,)
+
+destroy-dev: ## Delete sandbox curbside-dev-<uid> only (asks first; CONFIRM=yes to skip)
+	uv run python scripts/destroy_dev.py --project $(PROJECT_ID) --region $(REGION) \
+		--name $(DEV_AGENT_NAME) --metadata $(DEV_METADATA) $(if $(filter yes,$(CONFIRM)),--yes,)
 
 destroy-sa: ## Remove the service account and its role grants
 	$(SA_ENV) bash scripts/destroy_sa.sh

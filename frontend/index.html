@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fulton GA Outreach Planner</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="top-bar">
+        <div>
+          <p class="eyebrow">Saturday outreach planning</p>
+          <h1>Fulton GA mobile clinic planner</h1>
+        </div>
+        <div id="dateSelector" class="date-selector" aria-label="Saturday timeline"></div>
+      </header>
+
+      <main class="dashboard">
+        <section class="map-panel" aria-label="Map view for Fulton County">
+          <div id="map"></div>
+          <div class="map-legend" aria-label="Map legend">
+            <div class="legend-item">
+              <span class="legend-swatch hospital"></span>
+              <span>Hospital</span>
+            </div>
+            <div class="legend-item">
+              <span class="legend-swatch fqhc"></span>
+              <span>FQHC</span>
+            </div>
+          </div>
+        </section>
+
+        <aside class="side-panel" aria-label="Planner details and chat">
+          <section class="summary-card" aria-live="polite">
+            <div class="card-header">
+              <span class="chip">Target area</span>
+            </div>
+            <h2 id="siteTitle">Plan for Saturday</h2>
+            <dl class="metric-list">
+              <div>
+                <dt>Location</dt>
+                <dd id="siteLocation">Fulton GA</dd>
+              </div>
+              <div>
+                <dt>Coordinates</dt>
+                <dd id="siteCoords">--</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="chat-panel" aria-label="Agent chat panel">
+            <div class="chat-header">
+              <h3>Agent chat</h3>
+            </div>
+            <div id="chatMessages" class="chat-messages" aria-live="polite">
+            </div>
+            <form id="chatForm" class="chat-form">
+              <input
+                id="chatInput"
+                type="text"
+                placeholder="Ask the planning agent..."
+                aria-label="Chat message"
+              />
+              <button type="submit">Send</button>
+            </form>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="app.js"></script>
+  </body>
+</html>
