@@ -324,11 +324,17 @@ def extract_summary(data: Any) -> str:
     """Extract the most relevant human-readable response text from ADK events."""
     if isinstance(data, list):
         model_texts: list[str] = []
+        pipeline_results: list[str] = []
         flyer_text: str | None = None
         for event in data:
             if not isinstance(event, dict):
                 continue
-            state_delta = event.get("actions", {}).get("state_delta", {})
+            actions = event.get("actions") or {}
+            state_delta = (
+                actions.get("state_delta") or actions.get("stateDelta") or {}
+                if isinstance(actions, dict)
+                else {}
+            )
             if isinstance(state_delta, dict):
                 flyer = state_delta.get("flyer")
                 if isinstance(flyer, str) and flyer.strip():
@@ -344,11 +350,24 @@ def extract_summary(data: Any) -> str:
                 if isinstance(text, str) and text.strip():
                     if _try_parse_json_dict(text) is None:
                         model_texts.append(text.strip())
+                fn_resp = part.get("function_response") or part.get("functionResponse")
+                if isinstance(fn_resp, dict):
+                    resp_obj = fn_resp.get("response")
+                    if isinstance(resp_obj, dict):
+                        res_text = resp_obj.get("result")
+                        if (
+                            isinstance(res_text, str)
+                            and res_text.strip()
+                            and _try_parse_json_dict(res_text) is None
+                        ):
+                            pipeline_results.append(res_text.strip())
 
         if flyer_text:
             return flyer_text
         if model_texts:
             return "\n\n".join(model_texts)
+        if pipeline_results:
+            return "\n\n".join(pipeline_results)
 
     for key in (
         "flyer",
@@ -356,6 +375,7 @@ def extract_summary(data: Any) -> str:
         "selection_reason",
         "message",
         "text",
+        "result",
         "output",
         "response",
     ):
@@ -376,7 +396,9 @@ def extract_audit(data: Any) -> dict[str, Any] | None:
     """Extract the equity audit status dictionary if present in the agent events."""
     for value in walk_values(data, {"plan_status", "audit"}):
         if isinstance(value, dict) and (
-            "passed" in value or "svi_Guardrail_Triggered" in value
+            "passed" in value
+            or "svi_Guardrail_Triggered" in value
+            or "selected_mean" in value
         ):
             return value
         if isinstance(value, str):
