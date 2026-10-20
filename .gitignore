@@ -25,9 +25,12 @@ Thumbs.db
 
 # ADK / agents-cli
 .adk/
+.frontend-build/
 .google-agents-cli/
 .agents-cli-scripts/
 deployment_metadata.json.lock
+deployment_metadata.dev.json
+deployment_metadata.curbside.json
 .saved_chats
 .pytest_cache/
 .ruff_cache/

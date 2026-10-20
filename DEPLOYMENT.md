@@ -43,14 +43,21 @@ make status                   # if the deploy timed out locally, it is still run
 make test-remote Q="Hello"    # ask the deployed agent
 ```
 
-`make deploy` records the deployed agent's id in `deployment_metadata.json`. Commit it so
+`make deploy` records the production agent's id in `deployment_metadata.json`. Commit it so
 teammates update the same agent instead of creating a second one.
+
+`make deploy-dev` writes `deployment_metadata.dev.json` (gitignored) and restores the
+production metadata afterwards, so a sandbox deploy cannot overwrite `curbside`.
+Reuse the same sandbox on the next `make deploy-dev`; pass `DEV_ID=123` to pick a
+different suffix.
 
 ## Tear down
 
 ```bash
-make destroy                  # deletes the agent (asks you to type its name)
+make destroy                  # deletes production curbside (asks you to type its name)
 make destroy CONFIRM=yes      # no prompt
+make destroy-dev              # deletes sandbox curbside-dev-<uid> only
+make destroy-dev CONFIRM=yes  # same, no prompt
 make destroy-sa               # removes the service account and its role grants
 make destroy-all              # both, agent first
 ```
