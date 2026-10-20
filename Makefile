@@ -35,7 +35,7 @@ SA_ENV := PROJECT_ID=$(PROJECT_ID) SA_NAME=$(SA_NAME) DATASET=$(DATASET)
 
 .DEFAULT_GOAL := help
 .PHONY: help install env check auth setup setup-dry-run dev web serve frontend run test test-integration \
-        lint deploy deploy-dry-run deploy-frontend deploy-frontend-dry-run status list test-remote destroy destroy-sa destroy-all \
+        lint deploy deploy-dry-run stage-frontend deploy-frontend deploy-frontend-dry-run status list test-remote destroy destroy-sa destroy-all \
         deploy-dev deploy-dev-dry-run status-dev test-remote-dev destroy-dev
 
 help: ## Show this help
@@ -158,22 +158,47 @@ test-remote-dev: ## Ask sandbox curbside-dev one question: make test-remote-dev 
 
 # --- Deploy Frontend to Cloud Run -----------------------------------------
 
+FRONTEND_BUILD_DIR := .frontend-build
 FRONTEND_ENGINE_URL = https://$(REGION)-aiplatform.googleapis.com/v1/$(AGENT_ID):streamQuery
 FRONTEND_DEPLOY_CMD = gcloud run deploy $(FRONTEND_NAME) \
-	--source . \
+	--source $(FRONTEND_BUILD_DIR) \
 	--project $(PROJECT_ID) \
 	--region $(REGION) \
 	--service-account $(SA_EMAIL) \
 	--allow-unauthenticated \
 	--quiet \
-	--command uv \
-	--args "run,uvicorn,agent.proxy_server:app,--host,0.0.0.0,--port,8080" \
 	--set-env-vars "REASONING_ENGINE_URL=$(FRONTEND_ENGINE_URL),GOOGLE_CLOUD_PROJECT=$(PROJECT_ID),REGION=$(REGION)"
 
-deploy-frontend: test ## Deploy the Leaflet frontend + proxy to Cloud Run
+stage-frontend: ## Prepare lightweight .frontend-build directory for Cloud Run
+	@rm -rf $(FRONTEND_BUILD_DIR)
+	@mkdir -p $(FRONTEND_BUILD_DIR)/agent
+	@cp -R frontend $(FRONTEND_BUILD_DIR)/frontend
+	@cp agent/proxy_server.py $(FRONTEND_BUILD_DIR)/agent/proxy_server.py
+	@: > $(FRONTEND_BUILD_DIR)/agent/__init__.py
+	@cp agent/requirements.txt $(FRONTEND_BUILD_DIR)/requirements.txt
+	@test ! -f $(METADATA) || cp $(METADATA) $(FRONTEND_BUILD_DIR)/$(METADATA)
+	@printf '%s\n' \
+		"FROM python:3.12-slim" \
+		"WORKDIR /code" \
+		"COPY requirements.txt ./" \
+		"RUN pip install --no-cache-dir -r requirements.txt" \
+		"COPY frontend ./frontend" \
+		"COPY agent ./agent" \
+		"COPY deployment_metadata.json* ./" \
+		"ENV PORT=8080" \
+		"EXPOSE 8080" \
+		'CMD ["uvicorn", "agent.proxy_server:app", "--host", "0.0.0.0", "--port", "8080"]' \
+		> $(FRONTEND_BUILD_DIR)/Dockerfile
+
+deploy-frontend: test stage-frontend ## Deploy the Leaflet frontend + proxy to Cloud Run
 	@test -n "$(AGENT_ID)" || { echo "No deployed agent in $(METADATA); run make deploy"; exit 1; }
 	gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com --project $(PROJECT_ID)
-	$(FRONTEND_DEPLOY_CMD)
+	$(FRONTEND_DEPLOY_CMD) || { \
+		echo "--- Fetching latest Cloud Build log ---"; \
+		BUILD_ID=$$(gcloud builds list --region=$(REGION) --project=$(PROJECT_ID) --limit=1 --format="value(id)" 2>/dev/null); \
+		test -z "$$BUILD_ID" || gcloud builds log "$$BUILD_ID" --region=$(REGION) --project=$(PROJECT_ID) | tail -n 60; \
+		exit 1; \
+	}
 
 deploy-frontend-dry-run: ## Print the Cloud Run frontend deploy command without running it
 	@echo $(FRONTEND_DEPLOY_CMD)
