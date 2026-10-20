@@ -161,7 +161,7 @@ def test_make_deploy_runs_tests_then_deploys_with_the_sa() -> None:
     # Agent Identity would override (and clear) the service account.
     assert "--no-agent-identity" in deploy
     assert "GOOGLE_CLOUD_LOCATION=global" in deploy
-    assert "CURBSIDE_MODEL=gemini-3.6-flash" in deploy
+    assert "CURBSIDE_MODEL=gemini-3.8-flash" in deploy
     assert "--no-confirm-project" in deploy
 
 
