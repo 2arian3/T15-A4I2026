@@ -18,7 +18,6 @@ import os
 
 from google.adk.apps import App
 from google.adk.models import Gemini
-from google.adk.tools import AgentTool
 from google.genai import types
 
 from .config import DEFAULT_MODEL

@@ -553,9 +553,7 @@ WHERE b.total_pop >= 500
 """
 
 
-def _population_weighted_mean(
-    rows: list[dict[str, Any]], column: str
-) -> float | None:
+def _population_weighted_mean(rows: list[dict[str, Any]], column: str) -> float | None:
     weighted = 0.0
     population = 0.0
     for row in rows:
@@ -625,7 +623,9 @@ def _bq_project_and_dataset() -> tuple[str, str]:
     return project, dataset
 
 
-def _write_state(tool_context: ToolContext | None, key: str, value: dict[str, Any]) -> None:
+def _write_state(
+    tool_context: ToolContext | None, key: str, value: dict[str, Any]
+) -> None:
     if tool_context is not None and hasattr(tool_context, "state"):
         tool_context.state[key] = value
 

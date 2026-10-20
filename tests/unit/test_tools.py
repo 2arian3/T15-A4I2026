@@ -272,7 +272,9 @@ def test_select_four_saturday_tracts_enforces_spatial_separation() -> None:
     assert selected[0]["why_preferred_over_alternatives"]
     assert selected[0]["selection_reason"]
     site = SaturdaySite.model_validate(selected[0])
-    assert site.supporting_metrics.pm25_warning.startswith("12 km EPA grid context only")
+    assert site.supporting_metrics.pm25_warning.startswith(
+        "12 km EPA grid context only"
+    )
     assert haversine_km(33.6815, -84.4962, 33.6880, -84.4929) < 3.0
 
 

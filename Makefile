@@ -38,8 +38,9 @@ DEV_AGENT_ID    = $(shell python3 -c "import json;print(json.load(open('$(DEV_ME
 SA_ENV := PROJECT_ID=$(PROJECT_ID) SA_NAME=$(SA_NAME) DATASET=$(DATASET) AUDIT_DATASET=$(AUDIT_DATASET)
 
 .DEFAULT_GOAL := help
-.PHONY: help install env check auth setup setup-dry-run dev web serve run test test-integration \
-        lint deploy deploy-dry-run status list test-remote destroy destroy-sa destroy-all \
+.PHONY: help install env check auth setup setup-dry-run dev web serve frontend run test test-integration \
+        lint deploy deploy-dry-run deploy-dev deploy-dev-dry-run stage-frontend deploy-frontend deploy-frontend-dry-run \
+        status status-dev list test-remote test-remote-dev destroy destroy-dev destroy-sa destroy-all \
         load-audit deploy-toolbox toolbox-dry-run
 
 help: ## Show this help
@@ -186,6 +187,7 @@ FRONTEND_DEPLOY_CMD = gcloud run deploy $(FRONTEND_NAME) \
 	--region $(REGION) \
 	--service-account $(SA_EMAIL) \
 	--allow-unauthenticated \
+	--timeout 300 \
 	--quiet \
 	--set-env-vars "REASONING_ENGINE_URL=$(FRONTEND_ENGINE_URL),GOOGLE_CLOUD_PROJECT=$(PROJECT_ID),REGION=$(REGION)"
 
@@ -207,7 +209,7 @@ stage-frontend: ## Prepare lightweight .frontend-build directory for Cloud Run
 		"COPY deployment_metadata.json* ./" \
 		"ENV PORT=8080" \
 		"EXPOSE 8080" \
-		'CMD ["uvicorn", "agent.proxy_server:app", "--host", "0.0.0.0", "--port", "8080"]' \
+		'CMD ["uvicorn", "agent.proxy_server:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "4"]' \
 		> $(FRONTEND_BUILD_DIR)/Dockerfile
 
 deploy-frontend: test stage-frontend ## Deploy the Leaflet frontend + proxy to Cloud Run

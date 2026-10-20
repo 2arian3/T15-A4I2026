@@ -8,7 +8,9 @@ local ``gcloud auth print-access-token`` fallback.
 
 from __future__ import annotations
 
+import asyncio
 import csv
+import datetime as dt
 import json
 import mimetypes
 import os
@@ -153,16 +155,96 @@ def get_google_access_token() -> str:
     )
 
 
+IGNORED_WALK_KEYS = {
+    "ev_burden",
+    "ev_access",
+    "ev_context",
+    "burden_for_county",
+    "access_for_county",
+    "exposure_for_county",
+    "candidate_pool",
+    "skipped_adjacent_high_need_tracts",
+    "candidates",
+}
+
+
 def walk_values(value: Any, key_names: set[str]):
     """Yield values for any matching key name in nested dicts/lists."""
     if isinstance(value, dict):
         for key, child in value.items():
             if key in key_names:
                 yield child
+            if key in IGNORED_WALK_KEYS:
+                continue
             yield from walk_values(child, key_names)
     elif isinstance(value, list):
         for item in value:
             yield from walk_values(item, key_names)
+
+
+def build_default_plan_request(
+    county_fips: str = "13121",
+    today: dt.date | None = None,
+) -> dict[str, Any]:
+    """Build a valid PlanRequest dict for the 4 Saturdays of next calendar month."""
+    ref = today or dt.date.today()
+    if ref.month == 12:
+        year, month = ref.year + 1, 1
+    else:
+        year, month = ref.year, ref.month + 1
+
+    month_str = f"{year:04d}-{month:02d}"
+    saturdays: list[str] = []
+    current = dt.date(year, month, 1)
+    while current.month == month and len(saturdays) < 4:
+        if current.weekday() == 5:
+            saturdays.append(current.isoformat())
+        current += dt.timedelta(days=1)
+
+    return {
+        "county_fips": county_fips,
+        "month": month_str,
+        "saturdays": saturdays,
+    }
+
+
+def coerce_prompt_to_plan_request(
+    prompt: str,
+    today: dt.date | None = None,
+) -> str:
+    """Ensure the prompt sent to OutreachPipeline is a valid PlanRequest JSON string."""
+    parsed = _try_parse_json_dict(prompt)
+    if (
+        isinstance(parsed, dict)
+        and "county_fips" in parsed
+        and "month" in parsed
+        and isinstance(parsed.get("saturdays"), list)
+        and len(parsed["saturdays"]) == 4
+    ):
+        return json.dumps(parsed)
+
+    fips_match = re.search(r"\b(\d{5})\b", prompt)
+    county_fips = fips_match.group(1) if fips_match else "13121"
+
+    month_match = re.search(r"\b(20\d{2})-(0[1-9]|1[0-2])\b", prompt)
+    if month_match:
+        year = int(month_match.group(1))
+        month = int(month_match.group(2))
+        saturdays: list[str] = []
+        current = dt.date(year, month, 1)
+        while current.month == month and len(saturdays) < 4:
+            if current.weekday() == 5:
+                saturdays.append(current.isoformat())
+            current += dt.timedelta(days=1)
+        return json.dumps(
+            {
+                "county_fips": county_fips,
+                "month": f"{year:04d}-{month:02d}",
+                "saturdays": saturdays,
+            }
+        )
+
+    return json.dumps(build_default_plan_request(county_fips=county_fips, today=today))
 
 
 def parse_agent_response_text(raw_text: str) -> Any:
@@ -209,7 +291,7 @@ def _normalize_site(
     tract_coords: dict[str, tuple[float, float]],
 ) -> dict[str, Any] | None:
     """Normalize a single Saturday stop dict with lat/lng lookup fallback."""
-    geo_id = str(raw_site.get("geo_id") or "").strip()
+    geo_id = str(raw_site.get("geo_id") or raw_site.get("anchor_geo_id") or "").strip()
     lat_raw = raw_site.get("latitude", raw_site.get("lat"))
     lng_raw = raw_site.get("longitude", raw_site.get("lng"))
 
@@ -229,22 +311,43 @@ def _normalize_site(
     if lat is None or lng is None:
         return None
 
-    saturday_num = raw_site.get("saturday_number") or (index + 1)
+    saturday_num = (
+        raw_site.get("saturday_number") or raw_site.get("saturday") or (index + 1)
+    )
     try:
         saturday_num = int(saturday_num)
     except (TypeError, ValueError):
         saturday_num = index + 1
+
+    reasons_list = raw_site.get("reasons")
+    reasons_text = ""
+    if isinstance(reasons_list, list):
+        claim_texts = [
+            str(item.get("text") or "").strip()
+            for item in reasons_list
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        if claim_texts:
+            reasons_text = " ".join(claim_texts)
 
     default_reason = (
         f"Recommended Saturday #{saturday_num} mobile clinic site "
         f"(Tract {geo_id or 'Fulton'})."
     )
     reason = str(
-        raw_site.get("selection_reason") or raw_site.get("summary") or default_reason
+        raw_site.get("selection_reason")
+        or raw_site.get("summary")
+        or reasons_text
+        or default_reason
     ).strip()
+
+    composite_score = raw_site.get("composite_score")
+    if composite_score is None:
+        composite_score = raw_site.get("score")
 
     return {
         "saturday_number": saturday_num,
+        "date": raw_site.get("date"),
         "geo_id": geo_id,
         "lat": lat,
         "lng": lng,
@@ -253,7 +356,7 @@ def _normalize_site(
         "selection_reason": reason,
         "nearest_site_name": raw_site.get("nearest_site_name"),
         "nearest_care_km": raw_site.get("nearest_care_km"),
-        "composite_score": raw_site.get("composite_score"),
+        "composite_score": composite_score,
     }
 
 
@@ -262,7 +365,7 @@ def extract_sites(data: Any) -> list[dict[str, Any]]:
     tract_coords = load_tract_coordinates()
     raw_tracts: list[dict[str, Any]] = []
 
-    for candidate in walk_values(data, {"selected_tracts", "sites"}):
+    for candidate in walk_values(data, {"stops", "selected_tracts", "sites"}):
         if isinstance(candidate, list) and candidate:
             dict_items = [item for item in candidate if isinstance(item, dict)]
             if dict_items:
@@ -270,17 +373,21 @@ def extract_sites(data: Any) -> list[dict[str, Any]]:
                 break
 
     if not raw_tracts:
-        for text_candidate in walk_values(data, {"plan_data", "text"}):
+        for text_candidate in walk_values(data, {"plan_data", "plan_json", "text"}):
             if isinstance(text_candidate, str):
                 parsed = _try_parse_json_dict(text_candidate)
-                if parsed and isinstance(parsed.get("selected_tracts"), list):
-                    raw_tracts = [
-                        item
-                        for item in parsed["selected_tracts"]
-                        if isinstance(item, dict)
-                    ]
-                    if raw_tracts:
-                        break
+                if parsed:
+                    list_candidate = (
+                        parsed.get("stops")
+                        or parsed.get("selected_tracts")
+                        or parsed.get("sites")
+                    )
+                    if isinstance(list_candidate, list):
+                        raw_tracts = [
+                            item for item in list_candidate if isinstance(item, dict)
+                        ]
+                        if raw_tracts:
+                            break
 
     sites: list[dict[str, Any]] = []
     for idx, item in enumerate(raw_tracts):
@@ -323,12 +430,14 @@ def extract_lat_lng(data: Any) -> tuple[float | None, float | None]:
 def extract_summary(data: Any) -> str:
     """Extract the most relevant human-readable response text from ADK events."""
     if isinstance(data, list):
+        root_texts: list[str] = []
         model_texts: list[str] = []
         pipeline_results: list[str] = []
         flyer_text: str | None = None
         for event in data:
             if not isinstance(event, dict):
                 continue
+            author = str(event.get("author") or "").strip()
             actions = event.get("actions") or {}
             state_delta = (
                 actions.get("state_delta") or actions.get("stateDelta") or {}
@@ -336,9 +445,10 @@ def extract_summary(data: Any) -> str:
                 else {}
             )
             if isinstance(state_delta, dict):
-                flyer = state_delta.get("flyer")
+                flyer = state_delta.get("flyer") or state_delta.get("flyer_json")
                 if isinstance(flyer, str) and flyer.strip():
-                    flyer_text = flyer.strip()
+                    if _try_parse_json_dict(flyer) is None:
+                        flyer_text = flyer.strip()
 
             content = event.get("content")
             if not isinstance(content, dict):
@@ -349,7 +459,10 @@ def extract_summary(data: Any) -> str:
                 text = part.get("text")
                 if isinstance(text, str) and text.strip():
                     if _try_parse_json_dict(text) is None:
-                        model_texts.append(text.strip())
+                        cleaned = text.strip()
+                        model_texts.append(cleaned)
+                        if author == "curbside":
+                            root_texts.append(cleaned)
                 fn_resp = part.get("function_response") or part.get("functionResponse")
                 if isinstance(fn_resp, dict):
                     resp_obj = fn_resp.get("response")
@@ -362,6 +475,8 @@ def extract_summary(data: Any) -> str:
                         ):
                             pipeline_results.append(res_text.strip())
 
+        if root_texts:
+            return root_texts[-1]
         if flyer_text:
             return flyer_text
         if model_texts:
@@ -394,9 +509,10 @@ def extract_summary(data: Any) -> str:
 
 def extract_audit(data: Any) -> dict[str, Any] | None:
     """Extract the equity audit status dictionary if present in the agent events."""
-    for value in walk_values(data, {"plan_status", "audit"}):
+    for value in walk_values(data, {"audit_result", "plan_status", "audit"}):
         if isinstance(value, dict) and (
-            "passed" in value
+            "verdict" in value
+            or "passed" in value
             or "svi_Guardrail_Triggered" in value
             or "selected_mean" in value
         ):
@@ -413,7 +529,7 @@ def _post_json(
 ) -> tuple[int, str]:
     """Send an HTTP POST with JSON payload using requests or urllib fallback."""
     if requests is not None:
-        resp = requests.post(url, headers=headers, json=payload, timeout=120)
+        resp = requests.post(url, headers=headers, json=payload, timeout=240)
         return resp.status_code, resp.text
 
     req = urllib.request.Request(
@@ -423,7 +539,7 @@ def _post_json(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=240) as resp:
             return resp.status, resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
@@ -434,12 +550,13 @@ def call_reasoning_engine(prompt: str) -> dict[str, Any]:
     """Query the deployed ADK Reasoning Engine and normalize the response for the UI."""
     token = get_google_access_token()
     target_url = resolve_reasoning_engine_url()
+    normalized_message = coerce_prompt_to_plan_request(prompt)
 
     payload = {
         "class_method": "stream_query",
         "input": {
             "user_id": "web_user",
-            "message": prompt,
+            "message": normalized_message,
         },
     }
 
@@ -588,7 +705,7 @@ try:
             return JSONResponse({"error": "Missing request prompt."}, status_code=400)
 
         try:
-            result = call_reasoning_engine(prompt)
+            result = await asyncio.to_thread(call_reasoning_engine, prompt)
             return JSONResponse(result)
         except Exception as exc:  # pragma: no cover
             return JSONResponse({"error": str(exc)}, status_code=500)
