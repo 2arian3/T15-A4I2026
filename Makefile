@@ -20,17 +20,26 @@ CONFIRM        ?=
 HOST           ?= 127.0.0.1
 PORT           ?= 8000
 
+# Production Agent Runtime (shared). Sandbox is a separate engine so a personal
+# deploy cannot overwrite curbside. Override the suffix with DEV_ID=...
+DEV_ID         ?= $(shell id -u)
+DEV_AGENT_NAME ?= curbside-dev-$(DEV_ID)
 METADATA       := deployment_metadata.json
+DEV_METADATA   := deployment_metadata.dev.json
 AGENT_ID        = $(shell python3 -c "import json;print(json.load(open('$(METADATA)')).get('remote_agent_runtime_id') or '')" 2>/dev/null)
+DEV_AGENT_ID    = $(shell python3 -c "import json;print(json.load(open('$(DEV_METADATA)')).get('remote_agent_runtime_id') or '')" 2>/dev/null)
 
 SA_ENV := PROJECT_ID=$(PROJECT_ID) SA_NAME=$(SA_NAME) DATASET=$(DATASET)
 
 .DEFAULT_GOAL := help
 .PHONY: help install env check auth setup setup-dry-run dev web serve run test test-integration \
-        lint deploy deploy-dry-run status list test-remote destroy destroy-sa destroy-all
+        lint deploy deploy-dry-run status list test-remote destroy destroy-sa destroy-all \
+        deploy-dev deploy-dev-dry-run status-dev test-remote-dev destroy-dev
 
 help: ## Show this help
 	@echo "Curbside agent  (project=$(PROJECT_ID) region=$(REGION) model=$(MODEL)@$(MODEL_LOCATION))"
+	@echo "  production : $(AGENT_NAME)  ($(METADATA))"
+	@echo "  sandbox    : $(DEV_AGENT_NAME)  ($(DEV_METADATA))"
 	@echo
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -104,33 +113,52 @@ lint: ## Lint with ruff
 
 # --- Deploy to Agent Runtime ----------------------------------------------
 
-DEPLOY_FLAGS = --project $(PROJECT_ID) --region $(REGION) \
-	--service-name $(AGENT_NAME) \
+DEPLOY_COMMON = --project $(PROJECT_ID) --region $(REGION) \
 	--service-account $(SA_EMAIL) --no-agent-identity \
 	--env-vars GOOGLE_CLOUD_LOCATION=$(MODEL_LOCATION),CURBSIDE_MODEL=$(MODEL) \
 	--no-confirm-project
+DEPLOY_FLAGS = $(DEPLOY_COMMON) --service-name $(AGENT_NAME)
+DEV_DEPLOY_FLAGS = $(DEPLOY_COMMON) --service-name $(DEV_AGENT_NAME)
+WITH_DEV_META = bash scripts/with_cli_metadata.sh $(DEV_METADATA)
 
-deploy: test ## Run unit tests, then deploy (or update) the agent on Agent Runtime
+deploy: test ## Production: unit tests, then create/update curbside
 	agents-cli deploy $(DEPLOY_FLAGS)
 
-deploy-dry-run: ## Print the deploy without running it
+deploy-dry-run: ## Print the production deploy without running it
 	agents-cli deploy $(DEPLOY_FLAGS) --dry-run
 
-status: ## Check a deploy that is still in progress
+deploy-dev: test ## Sandbox: unit tests, then create/update curbside-dev-<uid>
+	$(WITH_DEV_META) agents-cli deploy $(DEV_DEPLOY_FLAGS)
+
+deploy-dev-dry-run: ## Print the sandbox deploy without running it
+	$(WITH_DEV_META) agents-cli deploy $(DEV_DEPLOY_FLAGS) --dry-run
+
+status: ## Check a production deploy that is still in progress
 	agents-cli deploy --status --project $(PROJECT_ID) --region $(REGION) --no-confirm-project
+
+status-dev: ## Check a sandbox deploy that is still in progress
+	$(WITH_DEV_META) agents-cli deploy --status --project $(PROJECT_ID) --region $(REGION) --no-confirm-project
 
 list: ## List Agent Runtime deployments in the project
 	agents-cli deploy --list --project $(PROJECT_ID) --region $(REGION) --no-confirm-project
 
-test-remote: ## Ask the deployed agent one question: make test-remote Q="..."
+test-remote: ## Ask production curbside one question: make test-remote Q="..."
 	@test -n "$(AGENT_ID)" || { echo "No deployed agent in $(METADATA); run make deploy"; exit 1; }
 	agents-cli run --url https://$(REGION)-aiplatform.googleapis.com/v1/$(AGENT_ID) --mode adk "$(Q)"
 
+test-remote-dev: ## Ask sandbox curbside-dev one question: make test-remote-dev Q="..."
+	@test -n "$(DEV_AGENT_ID)" || { echo "No sandbox agent in $(DEV_METADATA); run make deploy-dev"; exit 1; }
+	agents-cli run --url https://$(REGION)-aiplatform.googleapis.com/v1/$(DEV_AGENT_ID) --mode adk "$(Q)"
+
 # --- Tear down -------------------------------------------------------------
 
-destroy: ## Delete the agent from Agent Runtime (asks first; CONFIRM=yes to skip)
+destroy: ## Delete production curbside (asks first; CONFIRM=yes to skip)
 	uv run python scripts/destroy_agent.py --project $(PROJECT_ID) --region $(REGION) \
 		--name $(AGENT_NAME) --metadata $(METADATA) $(if $(filter yes,$(CONFIRM)),--yes,)
+
+destroy-dev: ## Delete sandbox curbside-dev-<uid> only (asks first; CONFIRM=yes to skip)
+	uv run python scripts/destroy_dev.py --project $(PROJECT_ID) --region $(REGION) \
+		--name $(DEV_AGENT_NAME) --metadata $(DEV_METADATA) $(if $(filter yes,$(CONFIRM)),--yes,)
 
 destroy-sa: ## Remove the service account and its role grants
 	$(SA_ENV) bash scripts/destroy_sa.sh
