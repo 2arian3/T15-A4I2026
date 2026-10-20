@@ -56,29 +56,40 @@ function parseCsvRows(text) {
   });
 }
 
-async function loadFacilityData() {
-  const response = await fetch(careSitesUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to load care site CSV: ${response.status}`);
+async function loadFacilityData(retries = 3) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      const response = await fetch(careSitesUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to load care site CSV: ${response.status}`);
+      }
+
+      const text = await response.text();
+      facilityData = parseCsvRows(text)
+        .filter((row) => row.FACILITY_NM && row.latitude && row.longitude)
+        .map((row) => ({
+          name: row.FACILITY_NM,
+          category: row.CMS_PROVIDER_CAT_DESC,
+          address: row.CMS_PROVIDER_ADDRESS,
+          city: row.CMS_PROVIDER_CITY,
+          state: row.CMS_PROVIDER_STATE_ABBR,
+          zip: row.CMS_PROVIDER_ZIP_CD,
+          latitude: Number(row.latitude),
+          longitude: Number(row.longitude),
+          site_kind: row.site_kind || row.CMS_PROVIDER_CAT_SUB_TYP_DESC || row.CMS_PROVIDER_CAT_DESC
+        }))
+        .filter((facility) => Number.isFinite(facility.latitude) && Number.isFinite(facility.longitude));
+
+      return facilityData;
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+      }
+    }
   }
-
-  const text = await response.text();
-  facilityData = parseCsvRows(text)
-    .filter((row) => row.FACILITY_NM && row.latitude && row.longitude)
-    .map((row) => ({
-      name: row.FACILITY_NM,
-      category: row.CMS_PROVIDER_CAT_DESC,
-      address: row.CMS_PROVIDER_ADDRESS,
-      city: row.CMS_PROVIDER_CITY,
-      state: row.CMS_PROVIDER_STATE_ABBR,
-      zip: row.CMS_PROVIDER_ZIP_CD,
-      latitude: Number(row.latitude),
-      longitude: Number(row.longitude),
-      site_kind: row.site_kind || row.CMS_PROVIDER_CAT_SUB_TYP_DESC || row.CMS_PROVIDER_CAT_DESC
-    }))
-    .filter((facility) => Number.isFinite(facility.latitude) && Number.isFinite(facility.longitude));
-
-  return facilityData;
+  throw lastError;
 }
 
 
@@ -490,10 +501,26 @@ function formatBotReply(plan) {
   return plan.summary;
 }
 
-async function sendInitialPlannerPrompt() {
-  const message = "Where should the van park on the 4 Saturdays of next month?";
+let isAgentRequestInFlight = false;
 
+async function sendPromptToAgent(message) {
+  if (isAgentRequestInFlight) {
+    return;
+  }
+  isAgentRequestInFlight = true;
   addMessage("user", message);
+
+  const pendingBubble = document.createElement("div");
+  pendingBubble.className = "message bot";
+  const pendingText = document.createElement("p");
+  pendingText.textContent =
+    "Running Curbside siting pipeline (Evidence → Planner → Equity Auditor → Explainer)... This takes ~60–120 seconds.";
+  pendingBubble.appendChild(pendingText);
+  chatMessages.appendChild(pendingBubble);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  const submitBtn = chatForm.querySelector('button[type="submit"]');
+  if (submitBtn) submitBtn.disabled = true;
 
   try {
     const plan = await callAgentEngine({
@@ -501,36 +528,38 @@ async function sendInitialPlannerPrompt() {
       output_format: "resp_with_latlong"
     });
 
+    pendingBubble.remove();
     renderPlan(plan);
     addMessage("bot", formatBotReply(plan));
   } catch (error) {
+    pendingBubble.remove();
     addMessage("bot", `The agent could not respond right now. ${error.message}`);
+  } finally {
+    isAgentRequestInFlight = false;
+    if (submitBtn) submitBtn.disabled = false;
   }
+}
+
+async function sendInitialPlannerPrompt() {
+  const message = "Where should the van park on the 4 Saturdays of next month?";
+  await sendPromptToAgent(message);
 }
 
 chatForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   const message = chatInput.value.trim();
-  if (!message) {
+  if (!message || isAgentRequestInFlight) {
     return;
   }
 
-  addMessage("user", message);
   chatInput.value = "";
-
-  try {
-    const plan = await callAgentEngine({
-      request: message,
-      output_format: "resp_with_latlong"
-    });
-
-    renderPlan(plan);
-    addMessage("bot", formatBotReply(plan));
-  } catch (error) {
-    addMessage("bot", `The agent could not respond right now. ${error.message}`);
-  }
+  await sendPromptToAgent(message);
 });
+
+renderDateSelector();
+siteTitle.textContent = getNextSaturdayLabel();
+addMessage("bot", "The map is focused on Fulton GA and overlays the census tract outlines. Hover the pin or tract border to see the tract ID.");
 
 loadFacilityData()
   .then((loadedFacilities) => {
@@ -540,10 +569,7 @@ loadFacilityData()
   })
   .catch((error) => {
     addMessage("bot", `The Fulton care site CSV could not be loaded: ${error.message}`);
+  })
+  .finally(() => {
+    sendInitialPlannerPrompt();
   });
-
-renderDateSelector();
-siteTitle.textContent = getNextSaturdayLabel();
-addMessage("bot", "The map is focused on Fulton GA and overlays the census tract outlines. Hover the pin or tract border to see the tract ID.");
-
-sendInitialPlannerPrompt();
